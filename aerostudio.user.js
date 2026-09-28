@@ -1,256 +1,176 @@
-// ==UserScript==
-// @name         Google AI Studio - StudioCore
-// @namespace    http://tampermonkey.net/
-// @version      1.1.2
-// @description  Zero-box native C++ CSS containment, dual desktop inline / mobile modal UI, Zero-Memory-Leak, Debounced Observer
-// @match        https://aistudio.google.com/*
-// @run-at       document-start
-// @author       Mireko
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=aistudio.google.com
-// @grant        none
-// ==/UserScript==
+
 
 (function () {
   "use strict";
 
   // =========================================================================
-  // SECTION 1: CONSTANTS, PERSISTENCE & DATA VAULT
+  // SECTION 1: CONSTANTS & PERSISTENCE
   // =========================================================================
-  const UI_CONSTANTS = {
-    DESKTOP_Z_INDEX: 999999,
-    MOBILE_OVERLAY_Z_INDEX: 1000000,
-    MOBILE_HANDLE_Z_INDEX: 999998,
-    DEFAULT_MAX_VISIBLE: 10,
-  };
-
   const CONFIG_KEY = "studiocore_engine_config";
   let config = {
-    maxVisible: UI_CONSTANTS.DEFAULT_MAX_VISIBLE,
-    baseMaxVisible: UI_CONSTANTS.DEFAULT_MAX_VISIBLE,
-    restoreStep: 10,
+    maxVisible: 6,
+    baseMaxVisible: 6,
+    restoreStep: 5,
+    cacheLimit: 50,
     enabled: true,
-    desktopMinimized: false,
-    mobilePosY: null,
+    drawerOpen: false,
+    drawerPosY: null,
   };
 
-  let dataVault = [];
+  let detachedPool = [];
+  let chatContainerRef = null;
 
   try {
     const saved = localStorage.getItem(CONFIG_KEY);
     if (saved) config = { ...config, ...JSON.parse(saved) };
-  } catch (e) {
-    console.error("StudioCore: LocalStorage Read Failed", e);
-  }
+  } catch (e) {}
 
   function saveConfig() {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   }
 
   // =========================================================================
-  // SECTION 2: BARE-METAL C++ CSS HOOK (T=0 ENGINE)
+  // SECTION 2: BARE-METAL DOM MANAGER (STRICT MEMORY POOL)
   // =========================================================================
-  const dynamicStyle = document.createElement("style");
-  dynamicStyle.id = "studiocore-engine-rules";
+  function getMessages() {
+    return Array.from(document.querySelectorAll("ms-chat-turn"));
+  }
 
-  function updateDynamicCSS() {
-    if (!config.enabled) {
-      dynamicStyle.textContent = "";
+  function virtualizeDOM() {
+    if (!config.enabled) return;
+
+    const messages = getMessages();
+    if (messages.length === 0) return;
+
+    if (!chatContainerRef && messages[0].parentElement) {
+      chatContainerRef = messages[0].parentElement;
+    }
+
+    if (messages.length <= config.maxVisible) {
+      syncUIState();
       return;
     }
-    dynamicStyle.textContent = `
-            ms-chat-turn:not(:nth-last-child(-n + ${config.maxVisible})) {
-                display: none !important;
-            }
-        `;
-  }
 
-  function injectT0() {
-    const target = document.head || document.documentElement;
-    if (target) {
-      target.appendChild(dynamicStyle);
-      updateDynamicCSS();
-    } else {
-      requestAnimationFrame(injectT0);
+    const toDetachCount = messages.length - config.maxVisible;
+    for (let i = 0; i < toDetachCount; i++) {
+      const el = messages[i];
+      if (el && el.parentElement) {
+        el.remove();
+        detachedPool.push(el);
+      }
     }
-  }
-  injectT0();
 
-  // =========================================================================
-  // SECTION 3: STATE CONTROLLER & DEEP DOM NUKE
-  // =========================================================================
-  function applyConfigChange() {
-    updateDynamicCSS();
-    syncAllUIState();
-    saveConfig();
+    if (detachedPool.length > config.cacheLimit) {
+      const excess = detachedPool.length - config.cacheLimit;
+      const deadNodes = detachedPool.splice(0, excess);
+      for (let i = 0; i < deadNodes.length; i++) {
+        deadNodes[i] = null;
+      }
+    }
+
+    syncUIState();
   }
 
   function restoreMessages() {
-    config.maxVisible += config.restoreStep;
-    applyConfigChange();
+    if (detachedPool.length === 0) return;
+
+    const count = Math.min(config.restoreStep, detachedPool.length);
+    config.maxVisible += count;
+
+    const toRestore = detachedPool.splice(-count);
+    const referenceNode = document.querySelector("ms-chat-turn");
+
+    if (chatContainerRef) {
+      toRestore.forEach((el) => {
+        if (referenceNode) {
+          chatContainerRef.insertBefore(el, referenceNode);
+        } else {
+          chatContainerRef.appendChild(el);
+        }
+      });
+    }
+
+    saveConfig();
+    syncUIState();
+  }
+
+  function restoreAllMessages() {
+    if (detachedPool.length === 0) return;
+
+    const count = detachedPool.length;
+    config.maxVisible += count;
+
+    const toRestore = detachedPool.splice(0, count);
+    const referenceNode = document.querySelector("ms-chat-turn");
+
+    if (chatContainerRef) {
+      toRestore.forEach((el) => {
+        if (referenceNode) {
+          chatContainerRef.insertBefore(el, referenceNode);
+        } else {
+          chatContainerRef.appendChild(el);
+        }
+      });
+    }
+
+    saveConfig();
+    syncUIState();
   }
 
   function resetToMax() {
     config.maxVisible = config.baseMaxVisible;
-    applyConfigChange();
-  }
-
-  function showNukeWarning(onConfirm) {
-    const overlay = document.createElement("div");
-    Object.assign(overlay.style, {
-      position: "fixed", top: "0", left: "0", width: "100vw", height: "100vh",
-      background: "rgba(0, 0, 0, 0.8)", backdropFilter: "blur(4px)", webkitBackdropFilter: "blur(4px)",
-      zIndex: "9999999", display: "flex", alignItems: "center", justifyContent: "center",
-      padding: "16px", boxSizing: "border-box", fontFamily: "Consolas, Monaco, monospace"
-    });
-
-    const modal = document.createElement("div");
-    Object.assign(modal.style, {
-      background: "#141414", padding: "20px", borderRadius: "6px", color: "#f0f0f0",
-      border: "1px solid #ff4444", boxShadow: "0 12px 40px rgba(255, 0, 0, 0.15)",
-      width: "340px", maxWidth: "100%", display: "flex", flexDirection: "column", gap: "12px"
-    });
-
-    const title = document.createElement("h3");
-    title.innerText = "⚠ SYSTEM WARNING";
-    Object.assign(title.style, { margin: "0", color: "#ff4444", fontSize: "16px", fontWeight: "bold" });
-
-    const message = document.createElement("p");
-    message.innerHTML = "This action will <b>PURGE</b> all hidden messages from the current DOM tree to free up RAM.<br><br>• UI RESTORATION WILL BE DISABLED.<br>• Data is backed up in memory for Export.<br>• Page refresh (F5) will reload original history.<br><br>Proceed with DOM Nuke?";
-    Object.assign(message.style, { margin: "0", color: "#d0d0d0", fontSize: "12px", lineHeight: "1.5" });
-
-    const btnContainer = document.createElement("div");
-    Object.assign(btnContainer.style, { display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "10px" });
-
-    const cancelBtn = document.createElement("button");
-    cancelBtn.innerText = "ABORT";
-    Object.assign(cancelBtn.style, {
-      padding: "6px 14px", background: "#202020", color: "#888888", border: "1px solid #444",
-      borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontFamily: "Consolas, Monaco, monospace", fontSize: "12px"
-    });
-    cancelBtn.onmouseover = () => { cancelBtn.style.color = "#fff"; cancelBtn.style.background = "#333"; };
-    cancelBtn.onmouseout = () => { cancelBtn.style.color = "#888"; cancelBtn.style.background = "#202020"; };
-
-    const confirmBtn = document.createElement("button");
-    confirmBtn.innerText = "NUKE IT";
-    Object.assign(confirmBtn.style, {
-      padding: "6px 14px", background: "#ff4444", color: "#fff", border: "1px solid #ff0000",
-      borderRadius: "4px", cursor: "pointer", fontWeight: "bold", textShadow: "0 1px 2px rgba(0,0,0,0.5)", fontFamily: "Consolas, Monaco, monospace", fontSize: "12px"
-    });
-    confirmBtn.onmouseover = () => { confirmBtn.style.background = "#cc0000"; };
-    confirmBtn.onmouseout = () => { confirmBtn.style.background = "#ff4444"; };
-
-    const destroyModal = () => overlay.remove();
-
-    cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); destroyModal(); });
-    confirmBtn.addEventListener('click', (e) => { e.stopPropagation(); destroyModal(); onConfirm(); });
-
-    btnContainer.appendChild(cancelBtn);
-    btnContainer.appendChild(confirmBtn);
-    modal.appendChild(title);
-    modal.appendChild(message);
-    modal.appendChild(btnContainer);
-    overlay.appendChild(modal);
-
-    overlay.addEventListener('click', (e) => {
-        if(e.target === overlay) destroyModal();
-    });
-
-    document.body.appendChild(overlay);
-  }
-
-  function nukeHiddenDOM() {
-    if (!config.enabled) return;
-
-    const allTurns = document.querySelectorAll("ms-chat-turn");
-    if (allTurns.length <= config.maxVisible) {
-        const toast = document.createElement("div");
-        toast.innerText = "System: 0 hidden nodes detected. Nuke aborted.";
-        Object.assign(toast.style, {
-            position: "fixed", top: "20px", left: "50%", transform: "translateX(-50%)",
-            background: "#333", color: "#fff", padding: "8px 16px", borderRadius: "4px",
-            fontFamily: "Consolas, Monaco, monospace", fontSize: "12px", zIndex: "9999999", border: "1px solid #555"
-        });
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 2500);
-        return;
-    }
-
-    showNukeWarning(() => {
-        const toRemoveCount = allTurns.length - config.maxVisible;
-        let nukedCount = 0;
-
-        for (let i = 0; i < toRemoveCount; i++) {
-            const turnNode = allTurns[i];
-            const textNode = turnNode.querySelector("ms-prompt-chunk, .text-chunk, ms-text-chunk");
-            if (textNode) {
-                const isUser = turnNode.querySelector('[data-turn-role="User"], .user') !== null;
-                const text = parseChunkToMarkdown(textNode);
-
-                let thoughts = "";
-                const thoughtNode = turnNode.querySelector("ms-thought-chunk .mat-expansion-panel-body, ms-thought-chunk ms-text-chunk");
-                if (thoughtNode) thoughts = parseChunkToMarkdown(thoughtNode);
-
-                dataVault.push({ role: isUser ? "User" : "Gemini", text, thoughts });
-            }
-            turnNode.remove();
-            nukedCount++;
-        }
-
-        console.log(`[StudioCore] Nuked ${nukedCount} DOM nodes. Data secured in Vault.`);
-        syncAllUIState();
-    });
+    saveConfig();
+    virtualizeDOM();
   }
 
   // =========================================================================
-  // SECTION 4: SYNCHRONOUS ZERO-REFLOW EXPORTER (VAULT + DOM)
+  // SECTION 3: SYNCHRONOUS EXPORTER
   // =========================================================================
   function parseChunkToMarkdown(rootNode) {
     if (!rootNode) return "";
     const clone = rootNode.cloneNode(true);
-
     const codeBlocks = clone.querySelectorAll("ms-code-block");
     codeBlocks.forEach((block) => {
       const lang = block.getAttribute("data-test-language") || "";
-      const codeEl = block.querySelector("pre code") || block.querySelector("pre");
+      const codeEl =
+        block.querySelector("pre code") || block.querySelector("pre");
       const codeText = codeEl ? codeEl.textContent : block.textContent;
-
-      const markdownCode = document.createTextNode(`\n\n\`\`\`${lang}\n${codeText.trim()}\n\`\`\`\n\n`);
+      const markdownCode = document.createTextNode(
+        `\n\n\`\`\`${lang}\n${codeText.trim()}\n\`\`\`\n\n`,
+      );
       block.replaceWith(markdownCode);
     });
-
     return clone.textContent.trim();
   }
 
   function forceFullExport() {
     let markdown = "# Google AI Studio Export\n\n";
+    const combinedNodes = [...detachedPool, ...getMessages()];
 
-    dataVault.forEach(entry => {
-        if (entry.role === "User") {
-            markdown += `### User\n${entry.text}\n\n`;
-        } else {
-            markdown += `### Gemini\n`;
-            if (entry.thoughts) markdown += `<details><summary>Thoughts</summary>\n\n${entry.thoughts}\n</details>\n\n`;
-            markdown += `${entry.text}\n\n`;
-        }
-    });
-
-    const nodes = document.querySelectorAll("ms-chat-turn");
-    nodes.forEach((turnNode) => {
-      const textNode = turnNode.querySelector("ms-prompt-chunk, .text-chunk, ms-text-chunk");
-      if (!textNode) return;
+    combinedNodes.forEach((turnNode) => {
+      const textNode = turnNode.querySelector(
+        "ms-prompt-chunk, .text-chunk, ms-text-chunk",
+      );
+      if (!textNode || textNode.textContent.trim() === "") {
+        markdown += `\n> *[StudioCore Warning]: Data not loaded by Google Lazy Hydration.*\n\n`;
+        return;
+      }
 
       const text = parseChunkToMarkdown(textNode);
       const isUser = turnNode.querySelector('[data-turn-role="User"], .user');
 
       let thoughts = "";
-      const thoughtNode = turnNode.querySelector("ms-thought-chunk .mat-expansion-panel-body, ms-thought-chunk ms-text-chunk");
+      const thoughtNode = turnNode.querySelector(
+        "ms-thought-chunk .mat-expansion-panel-body, ms-thought-chunk ms-text-chunk",
+      );
       if (thoughtNode) thoughts = parseChunkToMarkdown(thoughtNode);
 
       if (isUser) {
         markdown += `### User\n${text}\n\n`;
       } else {
         markdown += `### Gemini\n`;
-        if (thoughts) markdown += `<details><summary>Thoughts</summary>\n\n${thoughts}\n</details>\n\n`;
+        if (thoughts)
+          markdown += `<details><summary>Thoughts</summary>\n\n${thoughts}\n</details>\n\n`;
         markdown += `${text}\n\n`;
       }
     });
@@ -269,270 +189,375 @@
   }
 
   // =========================================================================
-  // SECTION 5: HYBRID RESPONSIVE UI & CROMITE EVENT FIXES
+  // SECTION 4: HARDWARE-ACCELERATED SLIDE-DRAWER INTERFACE (ERGONOMIC & SLEEK)
   // =========================================================================
-  const uiRegistry = { counters: [], inputs: [], toggles: [] };
+  let counterLabelRef;
+  let statusBtnRef;
+  let handleIconRef;
+  const inputRegistry = [];
 
-  function syncAllUIState() {
-    const total = document.querySelectorAll("ms-chat-turn").length;
-    const hidden = config.enabled ? Math.max(0, total - config.maxVisible) : 0;
-    const text = `Restore (${hidden} hidden)`;
+  function syncUIState() {
+    const text = `Restore (${detachedPool.length})`;
+    if (counterLabelRef) counterLabelRef.innerText = text;
 
-    uiRegistry.counters.forEach(el => el.innerText = text);
-    uiRegistry.inputs.forEach(({ el, key }) => {
-        if (Number(el.value) !== config[key]) el.value = config[key];
+    inputRegistry.forEach(({ el, key }) => {
+      if (Number(el.value) !== config[key]) el.value = config[key];
     });
-    uiRegistry.toggles.forEach(btn => {
-        btn.innerText = config.enabled ? "Status: Active" : "Status: Inactive";
-        btn.style.borderColor = config.enabled ? "#666666" : "#444444";
-        btn.style.color = config.enabled ? "#ffffff" : "#f0f0f0";
-    });
+
+    if (statusBtnRef) {
+      statusBtnRef.innerText = config.enabled
+        ? "Status: Active"
+        : "Status: Inactive";
+      statusBtnRef.style.borderColor = config.enabled ? "#666666" : "#383838";
+      statusBtnRef.style.color = config.enabled ? "#ffffff" : "#777777";
+    }
   }
 
-  function createCommonBtn(text, onClick, isPrimary = false) {
+  function applyConfigChange() {
+    if (config.enabled) virtualizeDOM();
+    syncUIState();
+    saveConfig();
+  }
+
+  function createDrawerButton(text, onClick, isPrimary = false) {
     const btn = document.createElement("button");
     btn.innerText = text;
     Object.assign(btn.style, {
-      padding: "7px 12px", background: isPrimary ? "#2c2c2c" : "#202020",
-      color: isPrimary ? "#ffffff" : "#f0f0f0", border: "1px solid #444444",
-      borderRadius: "4px", cursor: "pointer", fontFamily: "Consolas, Monaco, monospace",
-      fontSize: "12px", fontWeight: "500", letterSpacing: "0.4px", textAlign: "center",
-      transition: "background 0.15s, border-color 0.15s, color 0.15s", touchAction: "manipulation"
+      padding: "8px 12px",
+      background: isPrimary ? "#2c2c2c" : "#1e1e1e",
+      color: isPrimary ? "#ffffff" : "#e0e0e0",
+      border: "1px solid #383838",
+      borderRadius: "5px",
+      cursor: "pointer",
+      fontFamily: "Consolas, Monaco, monospace",
+      fontSize: "12px",
+      fontWeight: "500",
+      letterSpacing: "0.3px",
+      textAlign: "center",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      transition: "background 0.15s, border-color 0.15s, color 0.15s",
+      touchAction: "manipulation",
+      flex: "1",
     });
 
-    btn.onmouseover = () => { btn.style.background = "#383838"; btn.style.borderColor = "#666666"; btn.style.color = "#ffffff"; };
-    btn.onmouseout = () => { btn.style.background = isPrimary ? "#2c2c2c" : "#202020"; btn.style.borderColor = "#444444"; btn.style.color = isPrimary ? "#ffffff" : "#f0f0f0"; };
+    btn.onmouseover = () => {
+      btn.style.background = "#383838";
+      btn.style.borderColor = "#555555";
+      btn.style.color = "#ffffff";
+    };
+    btn.onmouseout = () => {
+      btn.style.background = isPrimary ? "#2c2c2c" : "#1e1e1e";
+      btn.style.borderColor = "#383838";
+      btn.style.color = isPrimary ? "#ffffff" : "#e0e0e0";
+    };
 
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (onClick) onClick(e);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (onClick) onClick(e);
     });
+
     return btn;
   }
 
-  function createCommonRow(label, key, isBase = false) {
+  function createDrawerRow(label, key, isBase = false) {
     const row = document.createElement("div");
-    Object.assign(row.style, { display: "flex", justifyContent: "space-between", alignItems: "center" });
+    Object.assign(row.style, {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+    });
 
     const span = document.createElement("span");
     span.innerText = label;
-    span.style.color = "#e0e0e0";
+    span.style.color = "#d0d0d0";
+    span.style.whiteSpace = "nowrap";
 
     const input = document.createElement("input");
     input.type = "number";
     input.value = config[key];
     Object.assign(input.style, {
-      width: "50px", background: "#1a1a1a", color: "#ffffff", border: "1px solid #444444",
-      borderRadius: "3px", textAlign: "center", fontFamily: "Consolas, Monaco, monospace",
-      fontSize: "12px", fontWeight: "bold", padding: "3px"
+      width: "55px",
+      background: "#181818",
+      color: "#ffffff",
+      border: "1px solid #383838",
+      borderRadius: "4px",
+      textAlign: "center",
+      fontFamily: "Consolas, Monaco, monospace",
+      fontSize: "12px",
+      fontWeight: "bold",
+      padding: "4px",
     });
 
-    const updateValue = (e) => {
-        e.stopPropagation();
-        const val = parseInt(e.target.value);
-        if (!isNaN(val)) {
-            config[key] = val;
-            if (isBase) config.maxVisible = val;
-            applyConfigChange();
-        }
+    const updateVal = (e) => {
+      e.stopPropagation();
+      const val = parseInt(e.target.value);
+      if (!isNaN(val)) {
+        config[key] = val;
+        if (isBase) config.maxVisible = val;
+        applyConfigChange();
+      }
     };
-    input.addEventListener('input', updateValue);
-    input.addEventListener('blur', () => { if (isNaN(parseInt(input.value))) input.value = UI_CONSTANTS.DEFAULT_MAX_VISIBLE; });
 
-    uiRegistry.inputs.push({ el: input, key });
+    input.addEventListener("input", updateVal);
+    input.addEventListener("blur", () => {
+      if (isNaN(parseInt(input.value))) input.value = 5;
+    });
+
+    inputRegistry.push({ el: input, key });
     row.appendChild(span);
     row.appendChild(input);
     return row;
   }
 
-  function createUI() {
-    const isMobileView = () => window.innerWidth <= 768;
+  function createSlideDrawerUI() {
 
-    // --- DESKTOP UI ---
-    const desktopWrapper = document.createElement("div");
-    desktopWrapper.id = "studiocore-desktop-container";
-    Object.assign(desktopWrapper.style, {
-      position: "fixed", bottom: "20px", right: "20px", zIndex: UI_CONSTANTS.DESKTOP_Z_INDEX,
-      display: "flex", flexDirection: "column-reverse", gap: "8px", alignItems: "flex-end",
+    const drawerPanel = document.createElement("div");
+    drawerPanel.id = "studiocore-drawer-panel";
+    Object.assign(drawerPanel.style, {
+      position: "fixed",
+      right: "0",
+      top: config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%",
+      width: "270px",
+      background: "#141414",
+      padding: "16px",
+      border: "1px solid #383838",
+      borderRight: "none",
+      borderRadius: "12px 0 0 12px",
+      color: "#f0f0f0",
+      fontFamily: "Consolas, Monaco, monospace",
+      fontSize: "12px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "9px",
+      boxShadow: "-10px 10px 35px rgba(0,0,0,0.8)",
+      boxSizing: "border-box",
+      zIndex: "1000000",
+      transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
+      transition:
+        "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
     });
 
-    const desktopPanel = document.createElement("div");
-    Object.assign(desktopPanel.style, {
-      background: "#141414", padding: "14px", borderRadius: "4px", color: "#f0f0f0",
-      border: "1px solid #383838", fontFamily: "Consolas, Monaco, monospace", fontSize: "12px",
-      display: config.desktopMinimized ? "none" : "flex", flexDirection: "column", gap: "8px",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.7)", width: "230px",
+    const drawerHandle = document.createElement("button");
+    drawerHandle.id = "studiocore-drawer-handle";
+    drawerHandle.innerText = config.drawerOpen ? ">" : "<";
+    handleIconRef = drawerHandle;
+    Object.assign(drawerHandle.style, {
+      position: "absolute",
+      right: "100%",
+      top: "15px",
+      padding: "18px 7px",
+      background: "#1a1a1a",
+      color: "#e0e0e0",
+      border: "1px solid #383838",
+      borderRight: "none",
+      borderRadius: "8px 0 0 8px",
+      cursor: "pointer",
+      fontFamily: "Consolas, Monaco, monospace",
+      fontSize: "14px",
+      fontWeight: "bold",
+      lineHeight: "1",
+      boxShadow: "-4px 2px 12px rgba(0,0,0,0.6)",
+      userSelect: "none",
+      webkitUserSelect: "none",
+      touchAction: "none",
+      transition: "background 0.15s, color 0.15s",
     });
 
-    const desktopToggleBtn = createCommonBtn(
-      config.desktopMinimized ? "[+] StudioCore" : "[-] Hide",
-      () => {
-        config.desktopMinimized = !config.desktopMinimized;
-        saveConfig();
-        desktopPanel.style.display = config.desktopMinimized ? "none" : "flex";
-        desktopToggleBtn.innerText = config.desktopMinimized ? "[+] StudioCore" : "[-] Hide";
-        if (!config.desktopMinimized) syncAllUIState();
-      }, true
-    );
-
-    const dtToggleEngineBtn = createCommonBtn("", () => { config.enabled = !config.enabled; applyConfigChange(); });
-    uiRegistry.toggles.push(dtToggleEngineBtn);
-
-    const dtRestoreBtn = createCommonBtn("Restore", restoreMessages);
-    uiRegistry.counters.push(dtRestoreBtn);
-
-    const dtResetBtn = createCommonBtn("Reset to Base", resetToMax);
-    const dtNukeBtn = createCommonBtn("Nuke Hidden DOM", nukeHiddenDOM);
-    dtNukeBtn.style.color = "#ff6b6b";
-    const dtExportBtn = createCommonBtn("Export Markdown", forceFullExport);
-
-    desktopPanel.appendChild(createCommonRow("Max Visible:", "baseMaxVisible", true));
-    desktopPanel.appendChild(createCommonRow("Restore Step:", "restoreStep"));
-    const dtDivider = document.createElement("div"); dtDivider.style.borderTop = "1px solid #2b2b2b"; dtDivider.style.margin = "4px 0";
-    desktopPanel.appendChild(dtDivider);
-
-    desktopPanel.appendChild(dtToggleEngineBtn);
-    desktopPanel.appendChild(dtRestoreBtn);
-    desktopPanel.appendChild(dtResetBtn);
-    desktopPanel.appendChild(dtNukeBtn);
-    desktopPanel.appendChild(dtExportBtn);
-
-    desktopWrapper.appendChild(desktopToggleBtn);
-    desktopWrapper.appendChild(desktopPanel);
-    document.body.appendChild(desktopWrapper);
-
-    // --- MOBILE UI ---
-    const mobileOverlay = document.createElement("div");
-    mobileOverlay.id = "studiocore-mobile-overlay";
-    Object.assign(mobileOverlay.style, {
-      position: "fixed", top: "0", left: "0", width: "100vw", height: "100vh",
-      background: "rgba(0, 0, 0, 0.65)", backdropFilter: "blur(3px)", webkitBackdropFilter: "blur(3px)",
-      zIndex: UI_CONSTANTS.MOBILE_OVERLAY_Z_INDEX, display: "none", alignItems: "center",
-      justifyContent: "center", padding: "16px", boxSizing: "border-box",
-    });
-
-    const mobileModalBox = document.createElement("div");
-    Object.assign(mobileModalBox.style, {
-      background: "#141414", padding: "16px", borderRadius: "6px", color: "#f0f0f0",
-      border: "1px solid #383838", fontFamily: "Consolas, Monaco, monospace", fontSize: "12px",
-      display: "flex", flexDirection: "column", gap: "8px", boxShadow: "0 12px 32px rgba(0,0,0,0.85)",
-      width: "260px", maxWidth: "100%", boxSizing: "border-box",
-    });
-
-    mobileModalBox.addEventListener('click', (e) => e.stopPropagation());
-
-    function closeMobileModal() { mobileOverlay.style.display = "none"; }
-    function openMobileModal() { syncAllUIState(); mobileOverlay.style.display = "flex"; }
-    mobileOverlay.addEventListener("click", closeMobileModal);
-
-    const mbHeader = document.createElement("div");
-    Object.assign(mbHeader.style, { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #2b2b2b", paddingBottom: "6px", marginBottom: "4px" });
-    const mbTitle = document.createElement("span"); mbTitle.innerText = "StudioCore Config"; mbTitle.style.fontWeight = "bold"; mbTitle.style.color = "#ffffff";
-    const mbCloseBtn = document.createElement("button"); mbCloseBtn.innerText = "[X]";
-    Object.assign(mbCloseBtn.style, { background: "transparent", border: "none", color: "#888888", cursor: "pointer", fontFamily: "Consolas, Monaco, monospace", fontSize: "12px", padding: "2px 4px" });
-    mbCloseBtn.addEventListener('click', (e) => { e.stopPropagation(); closeMobileModal(); });
-    mbHeader.appendChild(mbTitle); mbHeader.appendChild(mbCloseBtn); mobileModalBox.appendChild(mbHeader);
-
-    const mbToggleEngineBtn = createCommonBtn("", () => { config.enabled = !config.enabled; applyConfigChange(); });
-    uiRegistry.toggles.push(mbToggleEngineBtn);
-
-    const mbRestoreBtn = createCommonBtn("Restore", restoreMessages);
-    uiRegistry.counters.push(mbRestoreBtn);
-
-    const mbResetBtn = createCommonBtn("Reset to Base", resetToMax);
-    const mbNukeBtn = createCommonBtn("Nuke Hidden DOM", nukeHiddenDOM);
-    mbNukeBtn.style.color = "#ff6b6b";
-    const mbExportBtn = createCommonBtn("Export Markdown", forceFullExport);
-
-    mobileModalBox.appendChild(createCommonRow("Max Visible:", "baseMaxVisible", true));
-    mobileModalBox.appendChild(createCommonRow("Restore Step:", "restoreStep"));
-    const mbDivider = document.createElement("div"); mbDivider.style.borderTop = "1px solid #2b2b2b"; mbDivider.style.margin = "4px 0";
-    mobileModalBox.appendChild(mbDivider);
-
-    mobileModalBox.appendChild(mbToggleEngineBtn);
-    mobileModalBox.appendChild(mbRestoreBtn);
-    mobileModalBox.appendChild(mbResetBtn);
-    mobileModalBox.appendChild(mbNukeBtn);
-    mobileModalBox.appendChild(mbExportBtn);
-
-    mobileOverlay.appendChild(mobileModalBox);
-    document.body.appendChild(mobileOverlay);
-
-    // --- MOBILE HANDLE ---
-    const mobileHandle = document.createElement("button");
-    mobileHandle.id = "studiocore-mobile-handle";
-    mobileHandle.innerText = "<";
-    Object.assign(mobileHandle.style, {
-      position: "fixed", right: "0", top: config.mobilePosY !== null ? `${config.mobilePosY}px` : "55%",
-      zIndex: UI_CONSTANTS.MOBILE_HANDLE_Z_INDEX, padding: "10px 4px", background: "rgba(26, 26, 26, 0.92)",
-      backdropFilter: "blur(4px)", webkitBackdropFilter: "blur(4px)", color: "#e0e0e0",
-      border: "1px solid #444444", borderRight: "none", borderRadius: "4px 0 0 4px", cursor: "pointer",
-      fontFamily: "Consolas, Monaco, monospace", fontSize: "12px", fontWeight: "bold", lineHeight: "1",
-      boxShadow: "-2px 2px 8px rgba(0,0,0,0.5)", userSelect: "none", webkitUserSelect: "none", touchAction: "none",
-    });
-
-    let isDragging = false, hasMoved = false, startClientY = 0, initialTop = 0;
-    const onTouchMove = (e) => {
-      if (!isDragging) return;
-      const deltaY = e.touches[0].clientY - startClientY;
-      if (Math.abs(deltaY) > 4) hasMoved = true;
-      let nextY = initialTop + deltaY;
-      const maxY = window.innerHeight - mobileHandle.offsetHeight - 10;
-      mobileHandle.style.top = `${Math.max(10, Math.min(nextY, maxY))}px`;
+    drawerHandle.onmouseover = () => {
+      drawerHandle.style.background = "#282828";
+      drawerHandle.style.color = "#ffffff";
     };
-    const onTouchEnd = () => {
-      if (!isDragging) return;
-      isDragging = false;
-      document.removeEventListener("touchmove", onTouchMove);
-      document.removeEventListener("touchend", onTouchEnd);
-      if (hasMoved) { config.mobilePosY = Math.round(mobileHandle.getBoundingClientRect().top); saveConfig(); }
-    };
-    const onTouchStart = (e) => {
-      isDragging = true; hasMoved = false; startClientY = e.touches[0].clientY;
-      initialTop = mobileHandle.getBoundingClientRect().top;
-      document.addEventListener("touchmove", onTouchMove, { passive: true });
-      document.addEventListener("touchend", onTouchEnd);
+    drawerHandle.onmouseout = () => {
+      drawerHandle.style.background = "#1a1a1a";
+      drawerHandle.style.color = "#e0e0e0";
     };
 
-    mobileHandle.addEventListener("touchstart", onTouchStart, { passive: true });
-    mobileHandle.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (hasMoved) { e.preventDefault(); return; }
-      openMobileModal();
-    });
+    function setDrawerState(open) {
+      config.drawerOpen = open;
 
-    document.body.appendChild(mobileHandle);
+      if (open) {
 
-    // --- VIEWPORT ROUTER ---
-    function syncViewportMode() {
-      const mobile = isMobileView();
-      desktopWrapper.style.display = mobile ? "none" : "flex";
-      mobileHandle.style.display = mobile ? "block" : "none";
-      if (!mobile && mobileOverlay.style.display === "flex") closeMobileModal();
-      syncAllUIState();
+        const currentTop = drawerPanel.getBoundingClientRect().top;
+        const panelHeight = drawerPanel.offsetHeight || 340;
+        const maxAllowedTop = window.innerHeight - panelHeight - 12;
+
+        if (currentTop > maxAllowedTop) {
+          drawerPanel.style.top = `${Math.max(10, maxAllowedTop)}px`;
+        }
+      } else {
+
+        if (config.drawerPosY !== null) {
+          drawerPanel.style.top = `${config.drawerPosY}px`;
+        }
+      }
+
+      drawerPanel.style.transform = open ? "translateX(0)" : "translateX(100%)";
+      drawerHandle.innerText = open ? ">" : "<";
+      saveConfig();
+      if (open) syncUIState();
     }
 
-    window.addEventListener("resize", syncViewportMode);
-    syncViewportMode();
-  }
+    let isDragging = false;
+    let hasMoved = false;
+    let startY = 0;
+    let initialTop = 0;
 
-  // =========================================================================
-  // SECTION 6: LIFECYCLE & DEBOUNCED MUTATION OBSERVER
-  // =========================================================================
-  function initApp() {
-    createUI();
-    syncAllUIState();
+    const onPointerStart = (e) => {
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      isDragging = true;
+      hasMoved = false;
+      startY = clientY;
+      initialTop = drawerPanel.getBoundingClientRect().top;
+    };
 
-    let debounceTimer;
-    const observer = new MutationObserver((mutations) => {
-      const hasStructuralChange = mutations.some(m => m.addedNodes.length > 0 || m.removedNodes.length > 0);
-      if (hasStructuralChange) {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => { syncAllUIState(); }, 300);
+    const onPointerMove = (e) => {
+      if (!isDragging) return;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const deltaY = clientY - startY;
+
+      if (Math.abs(deltaY) > 4) hasMoved = true;
+
+      let nextY = initialTop + deltaY;
+
+      const maxY = window.innerHeight - 55;
+      nextY = Math.max(10, Math.min(nextY, maxY));
+      drawerPanel.style.top = `${nextY}px`;
+    };
+
+    const onPointerEnd = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      if (hasMoved) {
+        config.drawerPosY = Math.round(drawerPanel.getBoundingClientRect().top);
+        saveConfig();
+      }
+    };
+
+    drawerHandle.addEventListener("mousedown", onPointerStart);
+    window.addEventListener("mousemove", onPointerMove);
+    window.addEventListener("mouseup", onPointerEnd);
+
+    drawerHandle.addEventListener("touchstart", onPointerStart, {
+      passive: true,
+    });
+    window.addEventListener("touchmove", onPointerMove, { passive: true });
+    window.addEventListener("touchend", onPointerEnd);
+
+    drawerHandle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (hasMoved) return;
+      setDrawerState(!config.drawerOpen);
+    });
+
+    document.addEventListener("click", (e) => {
+      if (config.drawerOpen && !drawerPanel.contains(e.target)) {
+        setDrawerState(false);
       }
     });
 
-    const targetNode = document.querySelector("chat-window, ms-chat-window, main, .chat-container") || document.body;
+    drawerPanel.addEventListener("click", (e) => e.stopPropagation());
+
+    const panelHeader = document.createElement("div");
+    Object.assign(panelHeader.style, {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      borderBottom: "1px solid #282828",
+      paddingBottom: "8px",
+      marginBottom: "2px",
+    });
+
+    const headerTitle = document.createElement("span");
+    headerTitle.innerText = "StudioCore Engine";
+    headerTitle.style.fontWeight = "bold";
+    headerTitle.style.color = "#ffffff";
+
+    const headerClose = document.createElement("button");
+    headerClose.innerText = "[X]";
+    Object.assign(headerClose.style, {
+      background: "transparent",
+      border: "none",
+      color: "#888888",
+      cursor: "pointer",
+      fontFamily: "Consolas, Monaco, monospace",
+      fontSize: "12px",
+    });
+    headerClose.onclick = () => setDrawerState(false);
+
+    panelHeader.appendChild(headerTitle);
+    panelHeader.appendChild(headerClose);
+    drawerPanel.appendChild(panelHeader);
+
+    const statusBtn = createDrawerButton("", () => {
+      config.enabled = !config.enabled;
+      applyConfigChange();
+    });
+    statusBtnRef = statusBtn;
+
+    const restoreRow = document.createElement("div");
+    Object.assign(restoreRow.style, {
+      display: "flex",
+      gap: "6px",
+      width: "100%",
+    });
+
+    const restoreBtn = createDrawerButton("Restore", restoreMessages);
+    counterLabelRef = restoreBtn;
+
+    const restoreAllBtn = createDrawerButton("Restore All", restoreAllMessages);
+    restoreRow.appendChild(restoreBtn);
+    restoreRow.appendChild(restoreAllBtn);
+
+    const resetBtn = createDrawerButton("Reset to Base", resetToMax);
+    const exportBtn = createDrawerButton("Export Markdown", forceFullExport);
+
+    drawerPanel.appendChild(
+      createDrawerRow("Max Visible:", "baseMaxVisible", true),
+    );
+    drawerPanel.appendChild(createDrawerRow("Restore Step:", "restoreStep"));
+    drawerPanel.appendChild(createDrawerRow("Max History:", "cacheLimit"));
+
+    const divider = document.createElement("div");
+    divider.style.borderTop = "1px solid #282828";
+    divider.style.margin = "3px 0";
+    drawerPanel.appendChild(divider);
+
+    drawerPanel.appendChild(statusBtn);
+    drawerPanel.appendChild(restoreRow);
+    drawerPanel.appendChild(resetBtn);
+    drawerPanel.appendChild(exportBtn);
+
+    drawerPanel.appendChild(drawerHandle);
+    document.body.appendChild(drawerPanel);
+
+    syncUIState();
+  }
+
+  // =========================================================================
+  // SECTION 5: LIFECYCLE INITIALIZATION
+  // =========================================================================
+  function initApp() {
+    createSlideDrawerUI();
+
+    let debounceTimer;
+    const observer = new MutationObserver((mutations) => {
+      const hasStructuralChange = mutations.some(
+        (m) => m.addedNodes.length > 0 || m.removedNodes.length > 0,
+      );
+      if (hasStructuralChange) {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          virtualizeDOM();
+        }, 300);
+      }
+    });
+
+    const targetNode =
+      document.querySelector(
+        "chat-window, ms-chat-window, main, .chat-container",
+      ) || document.body;
     observer.observe(targetNode, { childList: true, subtree: true });
   }
 
