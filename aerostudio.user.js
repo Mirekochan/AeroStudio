@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google AI Studio - StudioCore
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
+// @version      2.0.0
 // @description  Zero-box native C++ CSS containment, dual desktop inline / mobile modal UI, Zero-Memory-Leak, Debounced Observer
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
@@ -134,72 +134,7 @@
   }
 
   // =========================================================================
-  // SECTION 3: SYNCHRONOUS EXPORTER
-  // =========================================================================
-  function parseChunkToMarkdown(rootNode) {
-    if (!rootNode) return "";
-    const clone = rootNode.cloneNode(true);
-    const codeBlocks = clone.querySelectorAll("ms-code-block");
-    codeBlocks.forEach((block) => {
-      const lang = block.getAttribute("data-test-language") || "";
-      const codeEl =
-        block.querySelector("pre code") || block.querySelector("pre");
-      const codeText = codeEl ? codeEl.textContent : block.textContent;
-      const markdownCode = document.createTextNode(
-        `\n\n\`\`\`${lang}\n${codeText.trim()}\n\`\`\`\n\n`,
-      );
-      block.replaceWith(markdownCode);
-    });
-    return clone.textContent.trim();
-  }
-
-  function forceFullExport() {
-    let markdown = "# Google AI Studio Export\n\n";
-    const combinedNodes = [...detachedPool, ...getMessages()];
-
-    combinedNodes.forEach((turnNode) => {
-      const textNode = turnNode.querySelector(
-        "ms-prompt-chunk, .text-chunk, ms-text-chunk",
-      );
-      if (!textNode || textNode.textContent.trim() === "") {
-        markdown += `\n> *[StudioCore Warning]: Data not loaded by Google Lazy Hydration.*\n\n`;
-        return;
-      }
-
-      const text = parseChunkToMarkdown(textNode);
-      const isUser = turnNode.querySelector('[data-turn-role="User"], .user');
-
-      let thoughts = "";
-      const thoughtNode = turnNode.querySelector(
-        "ms-thought-chunk .mat-expansion-panel-body, ms-thought-chunk ms-text-chunk",
-      );
-      if (thoughtNode) thoughts = parseChunkToMarkdown(thoughtNode);
-
-      if (isUser) {
-        markdown += `### User\n${text}\n\n`;
-      } else {
-        markdown += `### Gemini\n`;
-        if (thoughts)
-          markdown += `<details><summary>Thoughts</summary>\n\n${thoughts}\n</details>\n\n`;
-        markdown += `${text}\n\n`;
-      }
-    });
-
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    a.download = `studiocore_export_${timestamp}.md`;
-
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  // =========================================================================
-  // SECTION 4: HARDWARE-ACCELERATED SLIDE-DRAWER INTERFACE (ERGONOMIC & SLEEK)
+  // SECTION 3: HARDWARE-ACCELERATED SLIDE-DRAWER INTERFACE
   // =========================================================================
   let counterLabelRef;
   let statusBtnRef;
@@ -215,9 +150,7 @@
     });
 
     if (statusBtnRef) {
-      statusBtnRef.innerText = config.enabled
-        ? "Status: Active"
-        : "Status: Inactive";
+      statusBtnRef.innerText = config.enabled ? "Status: Active" : "Status: Inactive";
       statusBtnRef.style.borderColor = config.enabled ? "#666666" : "#383838";
       statusBtnRef.style.color = config.enabled ? "#ffffff" : "#777777";
     }
@@ -322,7 +255,6 @@
   }
 
   function createSlideDrawerUI() {
-
     const drawerPanel = document.createElement("div");
     drawerPanel.id = "studiocore-drawer-panel";
     Object.assign(drawerPanel.style, {
@@ -345,8 +277,7 @@
       boxSizing: "border-box",
       zIndex: "1000000",
       transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
-      transition:
-        "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
+      transition: "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
     });
 
     const drawerHandle = document.createElement("button");
@@ -386,23 +317,18 @@
 
     function setDrawerState(open) {
       config.drawerOpen = open;
-
       if (open) {
-
         const currentTop = drawerPanel.getBoundingClientRect().top;
-        const panelHeight = drawerPanel.offsetHeight || 340;
+        const panelHeight = drawerPanel.offsetHeight || 300;
         const maxAllowedTop = window.innerHeight - panelHeight - 12;
-
         if (currentTop > maxAllowedTop) {
           drawerPanel.style.top = `${Math.max(10, maxAllowedTop)}px`;
         }
       } else {
-
         if (config.drawerPosY !== null) {
           drawerPanel.style.top = `${config.drawerPosY}px`;
         }
       }
-
       drawerPanel.style.transform = open ? "translateX(0)" : "translateX(100%)";
       drawerHandle.innerText = open ? ">" : "<";
       saveConfig();
@@ -430,7 +356,6 @@
       if (Math.abs(deltaY) > 4) hasMoved = true;
 
       let nextY = initialTop + deltaY;
-
       const maxY = window.innerHeight - 55;
       nextY = Math.max(10, Math.min(nextY, maxY));
       drawerPanel.style.top = `${nextY}px`;
@@ -449,9 +374,7 @@
     window.addEventListener("mousemove", onPointerMove);
     window.addEventListener("mouseup", onPointerEnd);
 
-    drawerHandle.addEventListener("touchstart", onPointerStart, {
-      passive: true,
-    });
+    drawerHandle.addEventListener("touchstart", onPointerStart, { passive: true });
     window.addEventListener("touchmove", onPointerMove, { passive: true });
     window.addEventListener("touchend", onPointerEnd);
 
@@ -507,11 +430,7 @@
     statusBtnRef = statusBtn;
 
     const restoreRow = document.createElement("div");
-    Object.assign(restoreRow.style, {
-      display: "flex",
-      gap: "6px",
-      width: "100%",
-    });
+    Object.assign(restoreRow.style, { display: "flex", gap: "6px", width: "100%" });
 
     const restoreBtn = createDrawerButton("Restore", restoreMessages);
     counterLabelRef = restoreBtn;
@@ -521,13 +440,10 @@
     restoreRow.appendChild(restoreAllBtn);
 
     const resetBtn = createDrawerButton("Reset to Base", resetToMax);
-    const exportBtn = createDrawerButton("Export Markdown", forceFullExport);
 
-    drawerPanel.appendChild(
-      createDrawerRow("Max Visible:", "baseMaxVisible", true),
-    );
+    drawerPanel.appendChild(createDrawerRow("Max Visible:", "baseMaxVisible", true));
     drawerPanel.appendChild(createDrawerRow("Restore Step:", "restoreStep"));
-    drawerPanel.appendChild(createDrawerRow("Max History:", "cacheLimit"));
+    drawerPanel.appendChild(createDrawerRow("Memory Buffer:", "cacheLimit"));
 
     const divider = document.createElement("div");
     divider.style.borderTop = "1px solid #282828";
@@ -537,7 +453,6 @@
     drawerPanel.appendChild(statusBtn);
     drawerPanel.appendChild(restoreRow);
     drawerPanel.appendChild(resetBtn);
-    drawerPanel.appendChild(exportBtn);
 
     drawerPanel.appendChild(drawerHandle);
     document.body.appendChild(drawerPanel);
@@ -546,16 +461,14 @@
   }
 
   // =========================================================================
-  // SECTION 5: LIFECYCLE INITIALIZATION
+  // SECTION 4: LIFECYCLE INITIALIZATION
   // =========================================================================
   function initApp() {
     createSlideDrawerUI();
 
     let debounceTimer;
     const observer = new MutationObserver((mutations) => {
-      const hasStructuralChange = mutations.some(
-        (m) => m.addedNodes.length > 0 || m.removedNodes.length > 0,
-      );
+      const hasStructuralChange = mutations.some((m) => m.addedNodes.length > 0 || m.removedNodes.length > 0);
       if (hasStructuralChange) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -564,10 +477,7 @@
       }
     });
 
-    const targetNode =
-      document.querySelector(
-        "chat-window, ms-chat-window, main, .chat-container",
-      ) || document.body;
+    const targetNode = document.querySelector("chat-window, ms-chat-window, main, .chat-container") || document.body;
     observer.observe(targetNode, { childList: true, subtree: true });
   }
 
