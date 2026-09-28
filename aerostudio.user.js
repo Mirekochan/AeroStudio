@@ -1,4 +1,14 @@
-
+// ==UserScript==
+// @name         Google AI Studio - StudioCore
+// @namespace    http://tampermonkey.net/
+// @version      1.2.0
+// @description  Zero-box native C++ CSS containment, dual desktop inline / mobile modal UI, Zero-Memory-Leak, Debounced Observer
+// @match        https://aistudio.google.com/*
+// @run-at       document-start
+// @author       Mireko
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=aistudio.google.com
+// @grant        none
+// ==/UserScript==
 
 (function () {
   "use strict";
