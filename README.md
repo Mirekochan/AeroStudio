@@ -25,7 +25,7 @@ If you just want to stop Google AI Studio from lagging and freezing your browser
 ### Installation
 
 1. Install a user script manager extension (e.g., [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)) for your Chromium-based browser.
-2. Add the erostudio.user.js script to your manager.
+2. Add the Aerostudio.user.js script to your manager.
 3. Ensure the script is configured to inject at document-start to guarantee early initialization.
 4. Navigate to Google AI Studio. The optimizations will apply automatically.
 
