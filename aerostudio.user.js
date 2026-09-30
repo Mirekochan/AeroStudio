@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         Google AI Studio - StudioCore
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
+// @version      2.0.1
+// @license      MIT
 // @description  Zero-box native C++ CSS containment, dual desktop inline / mobile modal UI, Zero-Memory-Leak, Debounced Observer
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
