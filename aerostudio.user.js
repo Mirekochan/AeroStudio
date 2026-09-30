@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Google AI Studio - StudioCore
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @license      MIT
-// @description  Zero-box native C++ CSS containment, dual desktop inline / mobile modal UI, Zero-Memory-Leak, Debounced Observer
+// @description  Zero-box native C++ CSS containment, Zero-Memory-Leak, Debounced Observer
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
 // @author       Mireko
@@ -151,7 +151,9 @@
     });
 
     if (statusBtnRef) {
-      statusBtnRef.innerText = config.enabled ? "Status: Active" : "Status: Inactive";
+      statusBtnRef.innerText = config.enabled
+        ? "Status: Active"
+        : "Status: Inactive";
       statusBtnRef.style.borderColor = config.enabled ? "#666666" : "#383838";
       statusBtnRef.style.color = config.enabled ? "#ffffff" : "#777777";
     }
@@ -278,7 +280,8 @@
       boxSizing: "border-box",
       zIndex: "1000000",
       transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
-      transition: "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
+      transition:
+        "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
     });
 
     const drawerHandle = document.createElement("button");
@@ -375,7 +378,9 @@
     window.addEventListener("mousemove", onPointerMove);
     window.addEventListener("mouseup", onPointerEnd);
 
-    drawerHandle.addEventListener("touchstart", onPointerStart, { passive: true });
+    drawerHandle.addEventListener("touchstart", onPointerStart, {
+      passive: true,
+    });
     window.addEventListener("touchmove", onPointerMove, { passive: true });
     window.addEventListener("touchend", onPointerEnd);
 
@@ -431,7 +436,11 @@
     statusBtnRef = statusBtn;
 
     const restoreRow = document.createElement("div");
-    Object.assign(restoreRow.style, { display: "flex", gap: "6px", width: "100%" });
+    Object.assign(restoreRow.style, {
+      display: "flex",
+      gap: "6px",
+      width: "100%",
+    });
 
     const restoreBtn = createDrawerButton("Restore", restoreMessages);
     counterLabelRef = restoreBtn;
@@ -442,7 +451,9 @@
 
     const resetBtn = createDrawerButton("Reset to Base", resetToMax);
 
-    drawerPanel.appendChild(createDrawerRow("Max Visible:", "baseMaxVisible", true));
+    drawerPanel.appendChild(
+      createDrawerRow("Max Visible:", "baseMaxVisible", true),
+    );
     drawerPanel.appendChild(createDrawerRow("Restore Step:", "restoreStep"));
     drawerPanel.appendChild(createDrawerRow("Memory Buffer:", "cacheLimit"));
 
@@ -469,7 +480,9 @@
 
     let debounceTimer;
     const observer = new MutationObserver((mutations) => {
-      const hasStructuralChange = mutations.some((m) => m.addedNodes.length > 0 || m.removedNodes.length > 0);
+      const hasStructuralChange = mutations.some(
+        (m) => m.addedNodes.length > 0 || m.removedNodes.length > 0,
+      );
       if (hasStructuralChange) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -478,7 +491,10 @@
       }
     });
 
-    const targetNode = document.querySelector("chat-window, ms-chat-window, main, .chat-container") || document.body;
+    const targetNode =
+      document.querySelector(
+        "chat-window, ms-chat-window, main, .chat-container",
+      ) || document.body;
     observer.observe(targetNode, { childList: true, subtree: true });
   }
 
