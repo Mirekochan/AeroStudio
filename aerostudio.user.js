@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         Google AI Studio - StudioCore
 // @namespace    http://tampermonkey.net/
-// @version      2.0.2
+// @version      2.1.0
 // @license      MIT
-// @description  Zero-box native C++ CSS containment, Zero-Memory-Leak, Debounced Observer
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
 // @author       Mireko
@@ -14,22 +13,15 @@
 (function () {
   "use strict";
 
-  // =========================================================================
-  // SECTION 1: CONSTANTS & PERSISTENCE
-  // =========================================================================
   const CONFIG_KEY = "studiocore_engine_config";
   let config = {
     maxVisible: 6,
     baseMaxVisible: 6,
     restoreStep: 5,
-    cacheLimit: 50,
     enabled: true,
     drawerOpen: false,
     drawerPosY: null,
   };
-
-  let detachedPool = [];
-  let chatContainerRef = null;
 
   try {
     const saved = localStorage.getItem(CONFIG_KEY);
@@ -37,45 +29,56 @@
   } catch (e) {}
 
   function saveConfig() {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    try {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    } catch (e) {}
   }
 
-  // =========================================================================
-  // SECTION 2: BARE-METAL DOM MANAGER (STRICT MEMORY POOL)
-  // =========================================================================
+  function injectStyles() {
+    if (document.getElementById("studiocore-styles")) return;
+    const style = document.createElement("style");
+    style.id = "studiocore-styles";
+    style.textContent = `
+      ms-chat-turn.studiocore-hidden {
+        display: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
   function getMessages() {
     return Array.from(document.querySelectorAll("ms-chat-turn"));
   }
 
-  function virtualizeDOM() {
-    if (!config.enabled) return;
+  function getHiddenCount() {
+    return document.querySelectorAll("ms-chat-turn.studiocore-hidden").length;
+  }
 
+  function virtualizeDOM() {
     const messages = getMessages();
     if (messages.length === 0) return;
 
-    if (!chatContainerRef && messages[0].parentElement) {
-      chatContainerRef = messages[0].parentElement;
-    }
-
-    if (messages.length <= config.maxVisible) {
+    if (!config.enabled) {
+      for (let i = 0; i < messages.length; i++) {
+        messages[i].classList.remove("studiocore-hidden");
+      }
       syncUIState();
       return;
     }
 
-    const toDetachCount = messages.length - config.maxVisible;
-    for (let i = 0; i < toDetachCount; i++) {
-      const el = messages[i];
-      if (el && el.parentElement) {
-        el.remove();
-        detachedPool.push(el);
-      }
-    }
+    const total = messages.length;
+    const cutoff = Math.max(0, total - config.maxVisible);
 
-    if (detachedPool.length > config.cacheLimit) {
-      const excess = detachedPool.length - config.cacheLimit;
-      const deadNodes = detachedPool.splice(0, excess);
-      for (let i = 0; i < deadNodes.length; i++) {
-        deadNodes[i] = null;
+    for (let i = 0; i < total; i++) {
+      const el = messages[i];
+      if (i < cutoff) {
+        if (!el.classList.contains("studiocore-hidden")) {
+          el.classList.add("studiocore-hidden");
+        }
+      } else {
+        if (el.classList.contains("studiocore-hidden")) {
+          el.classList.remove("studiocore-hidden");
+        }
       }
     }
 
@@ -83,49 +86,22 @@
   }
 
   function restoreMessages() {
-    if (detachedPool.length === 0) return;
+    const hiddenCount = getHiddenCount();
+    if (hiddenCount === 0) return;
 
-    const count = Math.min(config.restoreStep, detachedPool.length);
+    const count = Math.min(config.restoreStep, hiddenCount);
     config.maxVisible += count;
-
-    const toRestore = detachedPool.splice(-count);
-    const referenceNode = document.querySelector("ms-chat-turn");
-
-    if (chatContainerRef) {
-      toRestore.forEach((el) => {
-        if (referenceNode) {
-          chatContainerRef.insertBefore(el, referenceNode);
-        } else {
-          chatContainerRef.appendChild(el);
-        }
-      });
-    }
-
     saveConfig();
-    syncUIState();
+    virtualizeDOM();
   }
 
   function restoreAllMessages() {
-    if (detachedPool.length === 0) return;
+    const messages = getMessages();
+    if (messages.length === 0) return;
 
-    const count = detachedPool.length;
-    config.maxVisible += count;
-
-    const toRestore = detachedPool.splice(0, count);
-    const referenceNode = document.querySelector("ms-chat-turn");
-
-    if (chatContainerRef) {
-      toRestore.forEach((el) => {
-        if (referenceNode) {
-          chatContainerRef.insertBefore(el, referenceNode);
-        } else {
-          chatContainerRef.appendChild(el);
-        }
-      });
-    }
-
+    config.maxVisible = messages.length;
     saveConfig();
-    syncUIState();
+    virtualizeDOM();
   }
 
   function resetToMax() {
@@ -134,21 +110,23 @@
     virtualizeDOM();
   }
 
-  // =========================================================================
-  // SECTION 3: HARDWARE-ACCELERATED SLIDE-DRAWER INTERFACE
-  // =========================================================================
-  let counterLabelRef;
-  let statusBtnRef;
-  let handleIconRef;
+  let counterLabelRef = null;
+  let statusBtnRef = null;
+  let handleIconRef = null;
   const inputRegistry = [];
 
   function syncUIState() {
-    const text = `Restore (${detachedPool.length})`;
-    if (counterLabelRef) counterLabelRef.innerText = text;
+    const hiddenCount = getHiddenCount();
+    if (counterLabelRef) {
+      counterLabelRef.innerText = `Restore (${hiddenCount})`;
+    }
 
-    inputRegistry.forEach(({ el, key }) => {
-      if (Number(el.value) !== config[key]) el.value = config[key];
-    });
+    for (let i = 0; i < inputRegistry.length; i++) {
+      const { el, key } = inputRegistry[i];
+      if (Number(el.value) !== config[key]) {
+        el.value = config[key];
+      }
+    }
 
     if (statusBtnRef) {
       statusBtnRef.innerText = config.enabled
@@ -160,7 +138,7 @@
   }
 
   function applyConfigChange() {
-    if (config.enabled) virtualizeDOM();
+    virtualizeDOM();
     syncUIState();
     saveConfig();
   }
@@ -238,8 +216,8 @@
 
     const updateVal = (e) => {
       e.stopPropagation();
-      const val = parseInt(e.target.value);
-      if (!isNaN(val)) {
+      const val = parseInt(e.target.value, 10);
+      if (!isNaN(val) && val > 0) {
         config[key] = val;
         if (isBase) config.maxVisible = val;
         applyConfigChange();
@@ -248,7 +226,9 @@
 
     input.addEventListener("input", updateVal);
     input.addEventListener("blur", () => {
-      if (isNaN(parseInt(input.value))) input.value = 5;
+      if (isNaN(parseInt(input.value, 10)) || parseInt(input.value, 10) <= 0) {
+        input.value = config[key];
+      }
     });
 
     inputRegistry.push({ el: input, key });
@@ -280,8 +260,7 @@
       boxSizing: "border-box",
       zIndex: "1000000",
       transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
-      transition:
-        "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
+      transition: "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
     });
 
     const drawerHandle = document.createElement("button");
@@ -344,45 +323,40 @@
     let startY = 0;
     let initialTop = 0;
 
-    const onPointerStart = (e) => {
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const onPointerDown = (e) => {
       isDragging = true;
       hasMoved = false;
-      startY = clientY;
+      startY = e.clientY;
       initialTop = drawerPanel.getBoundingClientRect().top;
+      drawerHandle.setPointerCapture(e.pointerId);
     };
 
     const onPointerMove = (e) => {
       if (!isDragging) return;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      const deltaY = clientY - startY;
-
+      const deltaY = e.clientY - startY;
       if (Math.abs(deltaY) > 4) hasMoved = true;
-
       let nextY = initialTop + deltaY;
       const maxY = window.innerHeight - 55;
       nextY = Math.max(10, Math.min(nextY, maxY));
       drawerPanel.style.top = `${nextY}px`;
     };
 
-    const onPointerEnd = () => {
+    const onPointerUp = (e) => {
       if (!isDragging) return;
       isDragging = false;
+      try {
+        drawerHandle.releasePointerCapture(e.pointerId);
+      } catch (err) {}
       if (hasMoved) {
         config.drawerPosY = Math.round(drawerPanel.getBoundingClientRect().top);
         saveConfig();
       }
     };
 
-    drawerHandle.addEventListener("mousedown", onPointerStart);
-    window.addEventListener("mousemove", onPointerMove);
-    window.addEventListener("mouseup", onPointerEnd);
-
-    drawerHandle.addEventListener("touchstart", onPointerStart, {
-      passive: true,
-    });
-    window.addEventListener("touchmove", onPointerMove, { passive: true });
-    window.addEventListener("touchend", onPointerEnd);
+    drawerHandle.addEventListener("pointerdown", onPointerDown);
+    drawerHandle.addEventListener("pointermove", onPointerMove);
+    drawerHandle.addEventListener("pointerup", onPointerUp);
+    drawerHandle.addEventListener("pointercancel", onPointerUp);
 
     drawerHandle.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -451,11 +425,8 @@
 
     const resetBtn = createDrawerButton("Reset to Base", resetToMax);
 
-    drawerPanel.appendChild(
-      createDrawerRow("Max Visible:", "baseMaxVisible", true),
-    );
+    drawerPanel.appendChild(createDrawerRow("Max Visible:", "baseMaxVisible", true));
     drawerPanel.appendChild(createDrawerRow("Restore Step:", "restoreStep"));
-    drawerPanel.appendChild(createDrawerRow("Memory Buffer:", "cacheLimit"));
 
     const divider = document.createElement("div");
     divider.style.borderTop = "1px solid #282828";
@@ -472,30 +443,53 @@
     syncUIState();
   }
 
-  // =========================================================================
-  // SECTION 4: LIFECYCLE INITIALIZATION
-  // =========================================================================
   function initApp() {
+    injectStyles();
     createSlideDrawerUI();
 
-    let debounceTimer;
+    let debounceTimer = null;
     const observer = new MutationObserver((mutations) => {
-      const hasStructuralChange = mutations.some(
-        (m) => m.addedNodes.length > 0 || m.removedNodes.length > 0,
-      );
-      if (hasStructuralChange) {
-        clearTimeout(debounceTimer);
+      let hasTurnMutation = false;
+      for (let i = 0; i < mutations.length; i++) {
+        const m = mutations[i];
+        for (let j = 0; j < m.addedNodes.length; j++) {
+          const node = m.addedNodes[j];
+          if (
+            node.nodeType === 1 &&
+            (node.tagName === "MS-CHAT-TURN" || (node.querySelector && node.querySelector("ms-chat-turn")))
+          ) {
+            hasTurnMutation = true;
+            break;
+          }
+        }
+        if (hasTurnMutation) break;
+        for (let j = 0; j < m.removedNodes.length; j++) {
+          const node = m.removedNodes[j];
+          if (
+            node.nodeType === 1 &&
+            (node.tagName === "MS-CHAT-TURN" || (node.querySelector && node.querySelector("ms-chat-turn")))
+          ) {
+            hasTurnMutation = true;
+            break;
+          }
+        }
+        if (hasTurnMutation) break;
+      }
+
+      if (hasTurnMutation) {
+        if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           virtualizeDOM();
-        }, 300);
+        }, 150);
       }
     });
 
     const targetNode =
-      document.querySelector(
-        "chat-window, ms-chat-window, main, .chat-container",
-      ) || document.body;
+      document.querySelector("chat-window, ms-chat-window, main, .chat-container") ||
+      document.body;
     observer.observe(targetNode, { childList: true, subtree: true });
+
+    virtualizeDOM();
   }
 
   if (document.readyState === "loading") {
