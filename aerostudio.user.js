@@ -458,7 +458,7 @@
     });
 
     const headerTitle = document.createElement("span");
-    headerTitle.innerText = "StudioCore v6.1";
+    headerTitle.innerText = "StudioCore v2.2";
     headerTitle.style.fontWeight = "bold";
     headerTitle.style.color = "#00e5ff";
 
