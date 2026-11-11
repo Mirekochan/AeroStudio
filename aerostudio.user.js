@@ -1,7 +1,8 @@
 // ==UserScript==
-// @name         Google AI Studio - StudioCore
+// @name         AeroStudio - Google AI Studio Performance Optimizer
+// @description  Fix UI lag, typing delay, and memory leaks in Google AI Studio during long chat sessions (1M+ tokens). Unmounts DOM nodes to boost performance.
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
+// @version      2.2.2
 // @license      MIT
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
@@ -31,6 +32,7 @@
   let isTyping = false;
   let typingTimer = null;
   let isReadingHistory = false;
+  let lastPathname = location.pathname;
 
   try {
     const saved = localStorage.getItem(CONFIG_KEY);
@@ -41,6 +43,26 @@
     try {
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     } catch (e) {}
+  }
+
+  function clearPoolMemory() {
+    for (let i = 0; i < detachedPool.length; i++) {
+      detachedPool[i] = null;
+    }
+    detachedPool = [];
+    chatContainerRef = null;
+    isReadingHistory = false;
+    config.maxVisible = config.baseMaxVisible;
+  }
+
+  function checkRouteChange() {
+    if (location.pathname !== lastPathname) {
+      lastPathname = location.pathname;
+      clearPoolMemory();
+      syncUIState();
+      return true;
+    }
+    return false;
   }
 
   function getMessages() {
@@ -57,6 +79,8 @@
   }
 
   function virtualizeDOM(forceTrim = false) {
+    checkRouteChange();
+
     if (!config.enabled) return;
     if (isReadingHistory && !forceTrim) {
       syncUIState();
@@ -69,7 +93,7 @@
       return;
     }
 
-    if (!chatContainerRef && messages[0].parentElement) {
+    if (!chatContainerRef || !chatContainerRef.isConnected) {
       chatContainerRef = messages[0].parentElement;
     }
 
@@ -124,6 +148,7 @@
   }
 
   function restoreMessages() {
+    checkRouteChange();
     if (detachedPool.length === 0) return;
 
     isInternalOp = true;
@@ -132,7 +157,9 @@
     const count = Math.min(config.restoreStep, detachedPool.length);
     const toRestore = detachedPool.splice(-count);
     const firstVisible = document.querySelector("ms-chat-turn");
-    const container = (firstVisible && firstVisible.parentElement) || chatContainerRef;
+    const container =
+      (firstVisible && firstVisible.parentElement) ||
+      (chatContainerRef && chatContainerRef.isConnected ? chatContainerRef : null);
 
     if (container) {
       const frag = document.createDocumentFragment();
@@ -157,6 +184,7 @@
   }
 
   function restoreAllMessages() {
+    checkRouteChange();
     if (detachedPool.length === 0) return;
 
     isInternalOp = true;
@@ -165,7 +193,9 @@
     const count = detachedPool.length;
     const toRestore = detachedPool.splice(0, count);
     const firstVisible = document.querySelector("ms-chat-turn");
-    const container = (firstVisible && firstVisible.parentElement) || chatContainerRef;
+    const container =
+      (firstVisible && firstVisible.parentElement) ||
+      (chatContainerRef && chatContainerRef.isConnected ? chatContainerRef : null);
 
     if (container) {
       const frag = document.createDocumentFragment();
@@ -327,6 +357,9 @@
   function createSlideDrawerUI() {
     if (document.getElementById("studiocore-drawer-panel")) return;
 
+    const TRANSITION_NORMAL = "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out";
+    const TRANSITION_DRAG = "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)";
+
     const drawerPanel = document.createElement("div");
     drawerPanel.id = "studiocore-drawer-panel";
     Object.assign(drawerPanel.style, {
@@ -349,7 +382,7 @@
       boxSizing: "border-box",
       zIndex: "2147483647",
       transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
-      transition: "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out",
+      transition: TRANSITION_NORMAL,
     });
 
     const drawerHandle = document.createElement("button");
@@ -378,6 +411,7 @@
 
     function setDrawerState(open) {
       config.drawerOpen = open;
+      drawerPanel.style.transition = TRANSITION_NORMAL;
       if (open) {
         const currentTop = drawerPanel.getBoundingClientRect().top;
         const panelHeight = drawerPanel.offsetHeight || 310;
@@ -404,6 +438,7 @@
       hasMoved = false;
       startY = e.clientY;
       initialTop = drawerPanel.getBoundingClientRect().top;
+      drawerPanel.style.transition = TRANSITION_DRAG;
       try {
         drawerHandle.setPointerCapture(e.pointerId);
       } catch (err) {}
@@ -422,6 +457,7 @@
     const onPointerEnd = (e) => {
       if (!isDragging) return;
       isDragging = false;
+      drawerPanel.style.transition = TRANSITION_NORMAL;
       try {
         drawerHandle.releasePointerCapture(e.pointerId);
       } catch (err) {}
@@ -458,7 +494,7 @@
     });
 
     const headerTitle = document.createElement("span");
-    headerTitle.innerText = "StudioCore v2.2";
+    headerTitle.innerText = "StudioCore v2.2.1";
     headerTitle.style.fontWeight = "bold";
     headerTitle.style.color = "#00e5ff";
 
@@ -560,36 +596,45 @@
     let debounceTimer;
     const observer = new MutationObserver((mutations) => {
       if (isInternalOp || isTyping) return;
+      if (checkRouteChange()) return;
 
-      let hasNewTurn = false;
+      let shouldUpdate = false;
       for (let i = 0; i < mutations.length; i++) {
-        const added = mutations[i].addedNodes;
-        for (let j = 0; j < added.length; j++) {
-          const n = added[j];
-          if (
-            n.nodeType === 1 &&
-            (n.tagName === "MS-CHAT-TURN" || (n.querySelector && n.querySelector("ms-chat-turn")))
-          ) {
-            hasNewTurn = true;
+        const m = mutations[i];
+        const target = m.target;
+        if (target && target.nodeType === 1 && target.closest("#studiocore-drawer-panel")) {
+          continue;
+        }
+
+        if (m.addedNodes.length > 0) {
+          if (target && target.nodeType === 1 && target.closest("ms-chat-turn")) {
+            shouldUpdate = true;
             break;
           }
+          for (let j = 0; j < m.addedNodes.length; j++) {
+            const n = m.addedNodes[j];
+            if (
+              n.nodeType === 1 &&
+              (n.tagName === "MS-CHAT-TURN" || (n.querySelector && n.querySelector("ms-chat-turn")))
+            ) {
+              isReadingHistory = false;
+              shouldUpdate = true;
+              break;
+            }
+          }
         }
-        if (hasNewTurn) break;
+        if (shouldUpdate) break;
       }
 
-      if (hasNewTurn) {
-        isReadingHistory = false;
+      if (shouldUpdate) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-          virtualizeDOM(true);
+          virtualizeDOM();
         }, 300);
       }
     });
 
-    const targetNode =
-      document.querySelector("chat-window, ms-chat-window, main, .chat-container") ||
-      document.body;
-    observer.observe(targetNode, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true });
 
     virtualizeDOM(true);
   }
