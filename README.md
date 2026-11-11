@@ -4,7 +4,7 @@ A userscript that unmounts old chat turns from the DOM to fix lag and typing del
 
 ## Preview
 
-<img width="305" height="410" alt="image" src="https://github.com/user-attachments/assets/5d09abb2-5020-491e-9850-820f4ba9abfd" />
+<img width="310" height="425" alt="{F0776D52-77BF-4666-952F-98A49D776AAA}" src="https://github.com/user-attachments/assets/cb8f9090-5fc0-46d7-9804-6f93bf9d1675" />
 
 ## Installation
 
