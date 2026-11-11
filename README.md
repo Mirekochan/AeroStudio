@@ -1,86 +1,40 @@
 # StudioCore
 
-**A High-Performance Optimization Engine for Google AI Studio**
+A userscript that unmounts old chat turns from the DOM to fix lag and typing delay in [Google AI Studio](https://aistudio.google.com/).
 
-StudioCore is a production-grade Tampermonkey userscript engineered to resolve critical performance degradation and browser freezing within Google AI Studio (aistudio.google.com) during extended, high-context sessions. 
+## Preview
 
----
+<img width="305" height="410" alt="image" src="https://github.com/user-attachments/assets/5d09abb2-5020-491e-9850-820f4ba9abfd" />
 
-## Table of Contents
-- [For End-Users](#for-end-users)
-  - [Installation](#installation)
-  - [Configuration & Controls Guide](#configuration--controls-guide)
-- [For Developers (Technical Deep-Dive)](#for-developers-technical-deep-dive)
-  - [The Problem](#the-problem-why-google-ai-studio-lags)
-  - [Architecture & Mechanics](#architecture--mechanics)
-  - [Privacy & Security Audit](#privacy--security-audit)
-- [License](#license)
+## Installation
 
----
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)
+2. Install [aerostudio.user.js](https://github.com/Mirekochan/AeroStudio/raw/refs/heads/main/aerostudio.user.js)
+3. Open `aistudio.google.com` and click the `<` button on the right edge to open the drawer (you can drag the `<` button up or down to reposition it)
 
-## For End-Users
+## Settings
 
-If you just want to stop Google AI Studio from lagging and freezing your browser, this section is for you.
+Click any number box to edit, then press `Enter` or click outside the box to apply:
 
-### Installation
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `Max Turns` | `2` | Maximum number of recent chat turns kept on screen. Older turns are detached into the memory pool. |
+| `Chat DOM Cap` | `1000` | Hard limit on DOM nodes inside visible turns. If a turn has huge code blocks and pushes `Chat DOM` over this cap, older turns are trimmed automatically (always leaves at least the latest turn visible). Set to `0` to disable. |
+| `Restore Step` | `3` | Number of older turns brought back each time you click `Restore`. |
+| `Memory Buffer` | `60` | Maximum detached turns stored in RAM. Oldest turns beyond this limit are cleared to save memory. |
 
-1. Install a user script manager extension (e.g., [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)) for your Chromium-based browser.
-2. Add the Aerostudio.user.js script to your manager.
-3. Ensure the script is configured to inject at document-start to guarantee early initialization.
-4. Navigate to Google AI Studio. The optimizations will apply automatically.
+## Controls & Usage
 
-### Configuration & Controls Guide
+- `Chat DOM | Total` - Live counter at the top (`Chat DOM` counts nodes inside visible messages; `Total` counts the whole page including AI Studio's UI). Turns green when under the cap, orange when a single huge message exceeds `Chat DOM Cap`.
+- `Status: Active / Inactive` - Toggle the script on or off. Turning it `Inactive` immediately puts all detached messages back into the chat.
+- `Restore (N)` / `Restore All` - Bring back older messages from the pool when you want to read history. While reading restored messages, auto-trimming is paused so they won't get cut again.
+- `Purge / Reset` - Click this after reading history to trim the chat back down to your `Max Turns` and `Chat DOM Cap` limits.
 
-Once installed, StudioCore operates autonomously in the background. To access the control panel, click or tap the edge handle (<) on the right side of the screen to open the **Slide-Drawer interface**.
+## Recommended Values
 
-#### Input Parameters
-Fine-tune these parameters based on your machine's hardware capabilities:
-- **Max Visible:** The maximum number of conversational turns to keep rendered on-screen at any given time. Lower values (e.g., 6) ensure maximum performance on low-end devices, while higher values keep more context visible.
-- **Restore Step:** The number of historical messages to restore into the view when clicking the "Restore" button.
-- **Memory Buffer:** The safety threshold before StudioCore begins aggressively moving old nodes into the detached memory pool to save RAM.
-
-#### Control Buttons
-- **Status (Active / Inactive):** Completely toggles the StudioCore engine on or off. When inactive, Google AI Studio behaves exactly as default (warning: may cause browser lag in heavy sessions).
-- **Restore:** Recovers a specific chunk of older messages from the memory pool back into the visible chat (quantity determined by the *Restore Step* value).
-- **Restore All:** Instantly forces all hidden/detached messages back onto the screen. Use this if you need to read the entire chat history at once.
-- **Reset to Base:** Clears the screen of older restored messages, re-hiding them to instantly regain smooth performance, keeping only the most recent *Max Visible* messages.
-
----
-
-## For Developers (Technical Deep-Dive)
-
-This section explains the under-the-hood mechanics for developers looking to understand or contribute to the source code.
-
-### The Problem (Why Google AI Studio Lags)
-
-Google AI Studio relies heavily on an Angular and Web Components architecture. During extended chat sessions—especially those approaching or exceeding 1,000,000 tokens—the application exhibits severe performance degradation, often leading to total browser unresponsiveness.
-
-This failure state is triggered by the simultaneous mounting of over 145,000 DOM nodes. The sheer volume of rendered components forces continuous layout recalculations and triggers resize observer storms within the browser. The default behavior attempts to render off-screen conversational turns, which saturates the main thread and exhausts layout resources, rendering the interface completely unusable.
-
-### Architecture & Mechanics
-
-StudioCore addresses these architectural bottlenecks through three primary mechanisms:
-
-1. **T=0 Native DOM Virtualization:**
-   StudioCore operates at document-start, injecting aggressive CSS containment rules and dynamically managing the DOM tree. It enforces display: none !important and explicitly unmounts off-screen conversational turns to completely bypass layout thrashing that typically plagues high-node-count pages.
-
-2. **Preserves In-Memory State (Zero-Memory-Leak):**
-   Naive solutions often attempt to permanently delete DOM nodes to improve performance. This approach catastrophically breaks Angular's internal state management and disrupts the two-way auto-save synchronization with Google Drive. StudioCore strictly preserves all nodes in an internal memory pool (Detached Pool), ensuring zero data loss and absolute application stability.
-
-3. **Hardware-Accelerated Slide-Drawer Interface:**
-   The script deploys a sleek, non-intrusive drawer panel docked to the right edge of the viewport. It leverages GPU-accelerated CSS transitions (	ransform: translateX) and smart overflow adjustments to ensure the controls remain accessible without obstructing the chat input or main interface, seamlessly adapting to both Desktop and Mobile environments.
-
-### Privacy & Security Audit
-
-StudioCore is designed with uncompromising security standards for enterprise and confidential workflows.
-
-- **100% Client-Side Execution:** The script operates entirely within the local browser environment.
-- **Zero External Network Requests:** No telemetry, analytics, or external asset loading is performed.
-- **Zero Credential Access:** The script does not read, access, or interact with session cookies, authentication tokens, or local storage credentials.
-- **Data Integrity:** Session data never leaves the Google AI Studio domain.
-
----
+- **Mobile (fixes keyboard typing delay):** `Max Turns: 2` (or `4`), `Chat DOM Cap: 800–1000`, `Memory Buffer: 60`
+- **Desktop PC:** `Max Turns: 6–8`, `Chat DOM Cap: 3000–4000`, `Memory Buffer: 150`
 
 ## License
 
-Please refer to the repository's LICENSE file for terms of use and distribution.
+MIT
