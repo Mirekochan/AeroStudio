@@ -8,7 +8,7 @@ A userscript that unmounts old chat turns from the DOM to fix lag and typing del
 
 ## Installation
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/) (Recommend)
 2. Install [aerostudio.user.js](https://github.com/Mirekochan/AeroStudio/raw/refs/heads/main/aerostudio.user.js)
 3. Open `aistudio.google.com` and click the `<` button on the right edge to open the drawer (you can drag the `<` button up or down to reposition it)
 
