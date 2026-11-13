@@ -2,7 +2,7 @@
 // @name         AeroStudio - Google AI Studio Performance Optimizer
 // @description  Stops Google AI Studio from lagging in long chats by unloading old turns from the DOM.
 // @namespace    http://tampermonkey.net/
-// @version      2.3.0
+// @version      2.3.1
 // @license      MIT
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
@@ -374,9 +374,13 @@
     Object.assign(host.style, {
       position: "fixed",
       right: "0",
-      top: config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%",
+      top: config.drawerPosY !== null ? `${config.drawerPosY}px` : "15%",
+      width: "0px",
+      height: "0px",
+      overflow: "visible",
       zIndex: "2147483647",
       transition: TRANSITION_HOST_NORMAL,
+      pointerEvents: "none",
     });
 
     const shadow = host.attachShadow({ mode: "open" });
@@ -386,7 +390,10 @@
     const drawerPanel = document.createElement("div");
     drawerPanel.id = "studiocore-drawer-panel";
     Object.assign(drawerPanel.style, {
-      position: "relative",
+      pointerEvents: config.drawerOpen ? "auto" : "none",
+      position: "absolute",
+      right: "0",
+      top: "0",
       width: "275px",
       background: "#141414",
       padding: "14px",
@@ -411,6 +418,7 @@
     drawerHandle.type = "button";
     drawerHandle.textContent = config.drawerOpen ? ">" : "<";
     Object.assign(drawerHandle.style, {
+      pointerEvents: "auto",
       position: "absolute",
       right: "100%",
       top: "15px",
@@ -434,7 +442,9 @@
     function setDrawerState(open) {
       config.drawerOpen = open;
       host.style.transition = TRANSITION_HOST_NORMAL;
+      drawerPanel.style.pointerEvents = open ? "auto" : "none";
       if (open) {
+        drawerHandle.style.opacity = "1";
         const currentTop = host.getBoundingClientRect().top;
         const panelHeight = drawerPanel.offsetHeight || 310;
         const maxAllowedTop = window.innerHeight - panelHeight - 12;
@@ -442,7 +452,8 @@
           host.style.top = `${Math.max(10, maxAllowedTop)}px`;
         }
       } else {
-        host.style.top = config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%";
+        drawerHandle.style.opacity = "0.35";
+        host.style.top = config.drawerPosY !== null ? `${config.drawerPosY}px` : "15%";
       }
       drawerPanel.style.transform = open ? "translateX(0)" : "translateX(100%)";
       drawerHandle.textContent = open ? ">" : "<";
@@ -461,6 +472,7 @@
       startY = e.clientY;
       initialTop = host.getBoundingClientRect().top;
       host.style.transition = "none";
+      drawerHandle.style.opacity = "1";
       try {
         drawerHandle.setPointerCapture(e.pointerId);
       } catch (err) {}
@@ -486,6 +498,9 @@
       if (hasMoved) {
         config.drawerPosY = Math.round(host.getBoundingClientRect().top);
         saveConfig();
+      }
+      if (!config.drawerOpen) {
+        drawerHandle.style.opacity = "0.35";
       }
     };
 
@@ -516,7 +531,7 @@
     });
 
     const headerTitle = document.createElement("span");
-    headerTitle.textContent = "StudioCore v2.3";
+    headerTitle.textContent = "StudioCore v2.3.1";
     headerTitle.style.fontWeight = "bold";
     headerTitle.style.color = "#00e5ff";
 
