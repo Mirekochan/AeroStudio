@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AeroStudio - Google AI Studio Performance Optimizer
-// @description  Fix UI lag, typing delay, and memory leaks in Google AI Studio during long chat sessions (1M+ tokens). Unmounts DOM nodes to boost performance.
+// @description  Stops Google AI Studio from lagging in long chats by unloading old turns from the DOM.
 // @namespace    http://tampermonkey.net/
 // @version      2.3.0
 // @license      MIT
