@@ -2,7 +2,7 @@
 // @name         AeroStudio - Google AI Studio Performance Optimizer
 // @description  Fix UI lag, typing delay, and memory leaks in Google AI Studio during long chat sessions (1M+ tokens). Unmounts DOM nodes to boost performance.
 // @namespace    http://tampermonkey.net/
-// @version      2.2.2
+// @version      2.3.0
 // @license      MIT
 // @match        https://aistudio.google.com/*
 // @run-at       document-start
@@ -16,7 +16,6 @@
 
   const CONFIG_KEY = "studiocore_v2_config";
   let config = {
-    maxVisible: 2,
     baseMaxVisible: 2,
     restoreStep: 3,
     chatDomLimit: 1000,
@@ -26,18 +25,32 @@
     drawerPosY: null,
   };
 
+  try {
+    const saved = localStorage.getItem(CONFIG_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      config = { ...config, ...parsed };
+    }
+  } catch (e) {}
+
   let detachedPool = [];
+  let nodeCountCache = new WeakMap();
   let chatContainerRef = null;
-  let isInternalOp = false;
+  let chatObserver = null;
+  let bootstrapObserver = null;
+  let debounceTimer = null;
   let isTyping = false;
   let typingTimer = null;
   let isReadingHistory = false;
+  let runtimeMaxVisible = config.baseMaxVisible;
   let lastPathname = location.pathname;
 
-  try {
-    const saved = localStorage.getItem(CONFIG_KEY);
-    if (saved) config = { ...config, ...JSON.parse(saved) };
-  } catch (e) {}
+  let uiHostRef = null;
+  let uiShadowRef = null;
+  let counterLabelRef = null;
+  let statusBtnRef = null;
+  let domCounterRef = null;
+  const inputRegistry = [];
 
   function saveConfig() {
     try {
@@ -45,43 +58,66 @@
     } catch (e) {}
   }
 
+  function flushObserver() {
+    if (chatObserver) chatObserver.takeRecords();
+  }
+
   function clearPoolMemory() {
-    for (let i = 0; i < detachedPool.length; i++) {
-      detachedPool[i] = null;
-    }
     detachedPool = [];
+    nodeCountCache = new WeakMap();
     chatContainerRef = null;
     isReadingHistory = false;
-    config.maxVisible = config.baseMaxVisible;
+    runtimeMaxVisible = config.baseMaxVisible;
+  }
+
+  function getMessages() {
+    if (chatContainerRef && chatContainerRef.isConnected) {
+      return Array.from(chatContainerRef.querySelectorAll(":scope > ms-chat-turn"));
+    }
+    const turns = Array.from(document.querySelectorAll("ms-chat-turn"));
+    if (turns.length > 0 && turns[0].parentElement) {
+      chatContainerRef = turns[0].parentElement;
+    }
+    return turns;
+  }
+
+  function getTurnNodeCount(turn, forceRecount = false) {
+    if (!forceRecount && nodeCountCache.has(turn)) {
+      return nodeCountCache.get(turn);
+    }
+    const count = 1 + turn.getElementsByTagName("*").length;
+    nodeCountCache.set(turn, count);
+    return count;
+  }
+
+  function getChatDomCount(messages) {
+    const list = messages || getMessages();
+    let count = 0;
+    for (let i = 0; i < list.length; i++) {
+      count += getTurnNodeCount(list[i], i === list.length - 1);
+    }
+    return count;
   }
 
   function checkRouteChange() {
     if (location.pathname !== lastPathname) {
       lastPathname = location.pathname;
       clearPoolMemory();
+      attachObservers();
       syncUIState();
       return true;
     }
     return false;
   }
 
-  function getMessages() {
-    return Array.from(document.querySelectorAll("ms-chat-turn"));
-  }
-
-  function getChatDomCount(messages) {
-    const list = messages || getMessages();
-    let count = list.length;
-    for (let i = 0; i < list.length; i++) {
-      count += list[i].getElementsByTagName("*").length;
-    }
-    return count;
-  }
-
   function virtualizeDOM(forceTrim = false) {
-    checkRouteChange();
+    if (checkRouteChange()) return;
 
-    if (!config.enabled) return;
+    if (!config.enabled) {
+      if (config.drawerOpen) syncUIState();
+      return;
+    }
+
     if (isReadingHistory && !forceTrim) {
       syncUIState();
       return;
@@ -95,17 +131,15 @@
 
     if (!chatContainerRef || !chatContainerRef.isConnected) {
       chatContainerRef = messages[0].parentElement;
+      attachObservers();
     }
-
-    isInternalOp = true;
 
     let idx = 0;
     let remaining = messages.length;
 
-    while (remaining > config.maxVisible && idx < messages.length - 1) {
+    while (remaining > runtimeMaxVisible && idx < messages.length - 1) {
       const el = messages[idx];
       if (el && el.parentElement) {
-        chatContainerRef = el.parentElement;
         el.remove();
         detachedPool.push(el);
       }
@@ -114,17 +148,13 @@
     }
 
     if (config.chatDomLimit > 0) {
-      let visibleList = messages.slice(idx);
+      const visibleList = messages.slice(idx);
       let currentChatDom = getChatDomCount(visibleList);
 
-      while (
-        visibleList.length > 1 &&
-        currentChatDom > config.chatDomLimit
-      ) {
+      while (visibleList.length > 1 && currentChatDom > config.chatDomLimit) {
         const el = visibleList.shift();
         if (el && el.parentElement) {
-          const elNodes = 1 + el.getElementsByTagName("*").length;
-          chatContainerRef = el.parentElement;
+          const elNodes = getTurnNodeCount(el, false);
           el.remove();
           detachedPool.push(el);
           currentChatDom -= elNodes;
@@ -134,16 +164,10 @@
 
     if (detachedPool.length > config.cacheLimit) {
       const excess = detachedPool.length - config.cacheLimit;
-      const deadNodes = detachedPool.splice(0, excess);
-      for (let i = 0; i < deadNodes.length; i++) {
-        deadNodes[i] = null;
-      }
+      detachedPool.splice(0, excess);
     }
 
-    setTimeout(() => {
-      isInternalOp = false;
-    }, 50);
-
+    flushObserver();
     syncUIState();
   }
 
@@ -151,12 +175,12 @@
     checkRouteChange();
     if (detachedPool.length === 0) return;
 
-    isInternalOp = true;
     isReadingHistory = true;
 
     const count = Math.min(config.restoreStep, detachedPool.length);
     const toRestore = detachedPool.splice(-count);
-    const firstVisible = document.querySelector("ms-chat-turn");
+    const current = getMessages();
+    const firstVisible = current[0] || null;
     const container =
       (firstVisible && firstVisible.parentElement) ||
       (chatContainerRef && chatContainerRef.isConnected ? chatContainerRef : null);
@@ -173,26 +197,23 @@
       }
     }
 
-    config.maxVisible = getMessages().length;
-
-    setTimeout(() => {
-      isInternalOp = false;
-    }, 50);
-
-    saveConfig();
+    runtimeMaxVisible = getMessages().length;
+    flushObserver();
     syncUIState();
   }
 
   function restoreAllMessages() {
     checkRouteChange();
-    if (detachedPool.length === 0) return;
+    if (detachedPool.length === 0) {
+      syncUIState();
+      return;
+    }
 
-    isInternalOp = true;
     isReadingHistory = true;
 
-    const count = detachedPool.length;
-    const toRestore = detachedPool.splice(0, count);
-    const firstVisible = document.querySelector("ms-chat-turn");
+    const toRestore = detachedPool.splice(0, detachedPool.length);
+    const current = getMessages();
+    const firstVisible = current[0] || null;
     const container =
       (firstVisible && firstVisible.parentElement) ||
       (chatContainerRef && chatContainerRef.isConnected ? chatContainerRef : null);
@@ -209,49 +230,40 @@
       }
     }
 
-    config.maxVisible = getMessages().length;
-
-    setTimeout(() => {
-      isInternalOp = false;
-    }, 50);
-
-    saveConfig();
+    runtimeMaxVisible = getMessages().length;
+    flushObserver();
     syncUIState();
   }
 
   function resetToMax() {
     isReadingHistory = false;
-    config.maxVisible = config.baseMaxVisible;
-    saveConfig();
+    runtimeMaxVisible = config.baseMaxVisible;
     virtualizeDOM(true);
   }
 
-  let counterLabelRef;
-  let statusBtnRef;
-  let domCounterRef;
-  const inputRegistry = [];
-
   function syncUIState() {
     if (counterLabelRef) {
-      counterLabelRef.innerText = `Restore (${detachedPool.length})`;
+      counterLabelRef.textContent = `Restore (${detachedPool.length})`;
     }
 
-    if (domCounterRef) {
+    if (domCounterRef && config.drawerOpen) {
       const chatDom = getChatDomCount();
       const totalDom = document.getElementsByTagName("*").length;
-      domCounterRef.innerText = `Chat DOM: ${chatDom} | Total: ${totalDom}`;
+      domCounterRef.textContent = `Chat DOM: ${chatDom} | Total: ${totalDom}`;
       domCounterRef.style.color =
         config.chatDomLimit > 0 && chatDom > config.chatDomLimit ? "#ff9800" : "#4caf50";
     }
 
-    inputRegistry.forEach(({ el, key }) => {
-      if (document.activeElement !== el) {
+    const activeEl = uiShadowRef ? uiShadowRef.activeElement : document.activeElement;
+    for (let i = 0; i < inputRegistry.length; i++) {
+      const { el, key } = inputRegistry[i];
+      if (activeEl !== el) {
         el.value = String(config[key]);
       }
-    });
+    }
 
     if (statusBtnRef) {
-      statusBtnRef.innerText = config.enabled ? "Status: Active" : "Status: Inactive";
+      statusBtnRef.textContent = config.enabled ? "Status: Active" : "Status: Inactive";
       statusBtnRef.style.borderColor = config.enabled ? "#00e5ff" : "#383838";
       statusBtnRef.style.color = config.enabled ? "#00e5ff" : "#777777";
     }
@@ -259,7 +271,8 @@
 
   function createDrawerButton(text, onClick, isPrimary = false) {
     const btn = document.createElement("button");
-    btn.innerText = text;
+    btn.type = "button";
+    btn.textContent = text;
     Object.assign(btn.style, {
       padding: "8px 10px",
       background: isPrimary ? "#16202a" : "#1e1e1e",
@@ -295,7 +308,7 @@
     });
 
     const span = document.createElement("span");
-    span.innerText = label;
+    span.textContent = label;
     span.style.color = "#d0d0d0";
     span.style.whiteSpace = "nowrap";
 
@@ -321,7 +334,7 @@
       if (!isNaN(val) && val >= minVal) {
         config[key] = val;
         if (isBase) {
-          config.maxVisible = val;
+          runtimeMaxVisible = val;
           isReadingHistory = false;
         }
         saveConfig();
@@ -334,9 +347,7 @@
 
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Enter") {
-        input.blur();
-      }
+      if (e.key === "Enter") input.blur();
     });
 
     input.addEventListener("change", (e) => {
@@ -344,9 +355,7 @@
       commitValue();
     });
 
-    input.addEventListener("blur", () => {
-      commitValue();
-    });
+    input.addEventListener("blur", commitValue);
 
     inputRegistry.push({ el: input, key });
     row.appendChild(span);
@@ -355,17 +364,29 @@
   }
 
   function createSlideDrawerUI() {
-    if (document.getElementById("studiocore-drawer-panel")) return;
+    if (!document.body || document.getElementById("studiocore-drawer-host")) return;
 
-    const TRANSITION_NORMAL = "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s ease-out";
-    const TRANSITION_DRAG = "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)";
+    const TRANSITION_HOST_NORMAL = "top 0.2s ease-out";
+    const TRANSITION_PANEL = "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)";
+
+    const host = document.createElement("div");
+    host.id = "studiocore-drawer-host";
+    Object.assign(host.style, {
+      position: "fixed",
+      right: "0",
+      top: config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%",
+      zIndex: "2147483647",
+      transition: TRANSITION_HOST_NORMAL,
+    });
+
+    const shadow = host.attachShadow({ mode: "open" });
+    uiHostRef = host;
+    uiShadowRef = shadow;
 
     const drawerPanel = document.createElement("div");
     drawerPanel.id = "studiocore-drawer-panel";
     Object.assign(drawerPanel.style, {
-      position: "fixed",
-      right: "0",
-      top: config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%",
+      position: "relative",
       width: "275px",
       background: "#141414",
       padding: "14px",
@@ -375,19 +396,20 @@
       color: "#f0f0f0",
       fontFamily: "Consolas, Monaco, monospace",
       fontSize: "12px",
+      lineHeight: "1.4",
       display: "flex",
       flexDirection: "column",
       gap: "8px",
       boxShadow: "-10px 10px 35px rgba(0,0,0,0.85)",
       boxSizing: "border-box",
-      zIndex: "2147483647",
       transform: config.drawerOpen ? "translateX(0)" : "translateX(100%)",
-      transition: TRANSITION_NORMAL,
+      transition: TRANSITION_PANEL,
     });
 
     const drawerHandle = document.createElement("button");
     drawerHandle.id = "studiocore-drawer-handle";
-    drawerHandle.innerText = config.drawerOpen ? ">" : "<";
+    drawerHandle.type = "button";
+    drawerHandle.textContent = config.drawerOpen ? ">" : "<";
     Object.assign(drawerHandle.style, {
       position: "absolute",
       right: "100%",
@@ -411,19 +433,19 @@
 
     function setDrawerState(open) {
       config.drawerOpen = open;
-      drawerPanel.style.transition = TRANSITION_NORMAL;
+      host.style.transition = TRANSITION_HOST_NORMAL;
       if (open) {
-        const currentTop = drawerPanel.getBoundingClientRect().top;
+        const currentTop = host.getBoundingClientRect().top;
         const panelHeight = drawerPanel.offsetHeight || 310;
         const maxAllowedTop = window.innerHeight - panelHeight - 12;
         if (currentTop > maxAllowedTop) {
-          drawerPanel.style.top = `${Math.max(10, maxAllowedTop)}px`;
+          host.style.top = `${Math.max(10, maxAllowedTop)}px`;
         }
-      } else if (config.drawerPosY !== null) {
-        drawerPanel.style.top = `${config.drawerPosY}px`;
+      } else {
+        host.style.top = config.drawerPosY !== null ? `${config.drawerPosY}px` : "35%";
       }
       drawerPanel.style.transform = open ? "translateX(0)" : "translateX(100%)";
-      drawerHandle.innerText = open ? ">" : "<";
+      drawerHandle.textContent = open ? ">" : "<";
       saveConfig();
       if (open) syncUIState();
     }
@@ -437,8 +459,8 @@
       isDragging = true;
       hasMoved = false;
       startY = e.clientY;
-      initialTop = drawerPanel.getBoundingClientRect().top;
-      drawerPanel.style.transition = TRANSITION_DRAG;
+      initialTop = host.getBoundingClientRect().top;
+      host.style.transition = "none";
       try {
         drawerHandle.setPointerCapture(e.pointerId);
       } catch (err) {}
@@ -451,18 +473,18 @@
       let nextY = initialTop + deltaY;
       const maxY = window.innerHeight - 55;
       nextY = Math.max(10, Math.min(nextY, maxY));
-      drawerPanel.style.top = `${nextY}px`;
+      host.style.top = `${nextY}px`;
     });
 
     const onPointerEnd = (e) => {
       if (!isDragging) return;
       isDragging = false;
-      drawerPanel.style.transition = TRANSITION_NORMAL;
+      host.style.transition = TRANSITION_HOST_NORMAL;
       try {
         drawerHandle.releasePointerCapture(e.pointerId);
       } catch (err) {}
       if (hasMoved) {
-        config.drawerPosY = Math.round(drawerPanel.getBoundingClientRect().top);
+        config.drawerPosY = Math.round(host.getBoundingClientRect().top);
         saveConfig();
       }
     };
@@ -477,7 +499,7 @@
     });
 
     document.addEventListener("click", (e) => {
-      if (config.drawerOpen && !drawerPanel.contains(e.target)) {
+      if (config.drawerOpen && !e.composedPath().includes(host)) {
         setDrawerState(false);
       }
     });
@@ -494,12 +516,13 @@
     });
 
     const headerTitle = document.createElement("span");
-    headerTitle.innerText = "StudioCore v2.2.1";
+    headerTitle.textContent = "StudioCore v2.3";
     headerTitle.style.fontWeight = "bold";
     headerTitle.style.color = "#00e5ff";
 
     const headerClose = document.createElement("button");
-    headerClose.innerText = "[X]";
+    headerClose.type = "button";
+    headerClose.textContent = "[X]";
     Object.assign(headerClose.style, {
       background: "transparent",
       border: "none",
@@ -508,7 +531,7 @@
       fontFamily: "Consolas, Monaco, monospace",
       fontSize: "12px",
     });
-    headerClose.onclick = () => setDrawerState(false);
+    headerClose.addEventListener("click", () => setDrawerState(false));
 
     panelHeader.appendChild(headerTitle);
     panelHeader.appendChild(headerClose);
@@ -539,14 +562,15 @@
 
     const statusBtn = createDrawerButton("", () => {
       config.enabled = !config.enabled;
+      saveConfig();
       if (config.enabled) {
         isReadingHistory = false;
+        runtimeMaxVisible = config.baseMaxVisible;
         virtualizeDOM(true);
       } else {
         restoreAllMessages();
       }
       syncUIState();
-      saveConfig();
     });
     statusBtnRef = statusBtn;
 
@@ -567,9 +591,72 @@
     drawerPanel.appendChild(resetBtn);
 
     drawerPanel.appendChild(drawerHandle);
-    document.body.appendChild(drawerPanel);
+    shadow.appendChild(drawerPanel);
+    document.body.appendChild(host);
 
+    if (config.drawerOpen) setDrawerState(true);
     syncUIState();
+  }
+
+  function attachObservers() {
+    if (chatObserver) {
+      chatObserver.disconnect();
+      chatObserver = null;
+    }
+
+    const firstTurn = document.querySelector("ms-chat-turn");
+    if (firstTurn && firstTurn.parentElement) {
+      if (bootstrapObserver) {
+        bootstrapObserver.disconnect();
+        bootstrapObserver = null;
+      }
+      chatContainerRef = firstTurn.parentElement;
+      chatObserver = new MutationObserver((mutations) => {
+        if (isTyping || checkRouteChange()) return;
+
+        let shouldUpdate = false;
+        for (let i = 0; i < mutations.length; i++) {
+          const m = mutations[i];
+          if (m.addedNodes.length > 0) {
+            for (let j = 0; j < m.addedNodes.length; j++) {
+              const n = m.addedNodes[j];
+              if (
+                n.nodeType === 1 &&
+                (n.tagName === "MS-CHAT-TURN" || (n.querySelector && n.querySelector("ms-chat-turn")))
+              ) {
+                isReadingHistory = false;
+                runtimeMaxVisible = config.baseMaxVisible;
+                shouldUpdate = true;
+                break;
+              }
+            }
+            if (!shouldUpdate && m.target && m.target.nodeType === 1 && m.target.closest("ms-chat-turn")) {
+              shouldUpdate = true;
+            }
+          }
+          if (shouldUpdate) break;
+        }
+
+        if (shouldUpdate) {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            virtualizeDOM();
+          }, 300);
+        }
+      });
+      chatObserver.observe(chatContainerRef, { childList: true, subtree: true });
+      return;
+    }
+
+    if (!bootstrapObserver && document.body) {
+      bootstrapObserver = new MutationObserver(() => {
+        if (document.querySelector("ms-chat-turn")) {
+          attachObservers();
+          virtualizeDOM(true);
+        }
+      });
+      bootstrapObserver.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   function initApp() {
@@ -581,7 +668,7 @@
         if (
           e.target &&
           (e.target.tagName === "TEXTAREA" || e.target.isContentEditable) &&
-          !e.target.closest("#studiocore-drawer-panel")
+          !e.composedPath().includes(uiHostRef)
         ) {
           isTyping = true;
           if (typingTimer) clearTimeout(typingTimer);
@@ -593,55 +680,19 @@
       { passive: true, capture: true }
     );
 
-    let debounceTimer;
-    const observer = new MutationObserver((mutations) => {
-      if (isInternalOp || isTyping) return;
-      if (checkRouteChange()) return;
-
-      let shouldUpdate = false;
-      for (let i = 0; i < mutations.length; i++) {
-        const m = mutations[i];
-        const target = m.target;
-        if (target && target.nodeType === 1 && target.closest("#studiocore-drawer-panel")) {
-          continue;
-        }
-
-        if (m.addedNodes.length > 0) {
-          if (target && target.nodeType === 1 && target.closest("ms-chat-turn")) {
-            shouldUpdate = true;
-            break;
-          }
-          for (let j = 0; j < m.addedNodes.length; j++) {
-            const n = m.addedNodes[j];
-            if (
-              n.nodeType === 1 &&
-              (n.tagName === "MS-CHAT-TURN" || (n.querySelector && n.querySelector("ms-chat-turn")))
-            ) {
-              isReadingHistory = false;
-              shouldUpdate = true;
-              break;
-            }
-          }
-        }
-        if (shouldUpdate) break;
-      }
-
-      if (shouldUpdate) {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          virtualizeDOM();
-        }, 300);
-      }
-    });
-
-    observer.observe(document.body, { childList: true, subtree: true });
-
+    attachObservers();
     virtualizeDOM(true);
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initApp);
+    document.addEventListener("DOMContentLoaded", initApp, { once: true });
   } else {
     initApp();
+  }
+
+  if (window.navigation) {
+    window.navigation.addEventListener("navigatesuccess", checkRouteChange);
+  } else {
+    window.addEventListener("popstate", checkRouteChange);
   }
 })();
